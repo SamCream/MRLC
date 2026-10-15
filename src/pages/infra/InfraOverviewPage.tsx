@@ -38,6 +38,9 @@ export default function InfraOverviewPage(){
           <div><span>Product projection</span><strong>{status.data?.projection??'—'}</strong></div>
           <div><span>UI invalidation stream</span><strong>{status.data?.uiEvents??'—'}</strong></div>
           <div><span>Domain event truth</span><strong>{status.data?.domainEvents??'—'}</strong></div>
+          <div><span>App schema</span><strong>{status.data?'v'+status.data.schema.appVersion:'—'}</strong></div>
+          <div><span>Migration ledger</span><strong>{status.data?String(status.data.schema.migrations.length)+' applied':'—'}</strong></div>
+          <div><span>Legacy Infra schemas</span><strong>{status.data?.schema.legacyInfraSchemas??'—'}</strong></div>
           <div><span>Database</span><strong className="mono infra-path">{status.data?.database??'—'}</strong></div>
         </div>
       </div>
