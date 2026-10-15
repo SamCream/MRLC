@@ -257,3 +257,9 @@
 }
 .infra-a2cm-form textarea,.infra-a2cm-review textarea{min-height:74px;resize:vertical;line-height:1.45}
 .infra-a2cm-review .infra-kv p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+
+
+/* Workspace authoritative routing/readiness metadata */
+.message-runtime-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:7px}
+.message-runtime-meta>.muted{font-size:10px;flex-basis:100%;line-height:1.4}
+.response-dispatch-summary{margin:6px 10px 0;font-size:10px}
