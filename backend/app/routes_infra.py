@@ -5,7 +5,10 @@ No current React page depends on these routes; they are intentionally additive.
 from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime, timezone
+from pathlib import Path
 import json
+import os
+import shutil
 import time
 from typing import Any
 from fastapi import Depends
@@ -14,6 +17,7 @@ from .storage import ident
 from infra.memory import MemoryItem, EvidenceItem
 from infra.project_bank import Issue, Decision, Lesson, Progress
 from infra.evidence_graph import evidence_chains
+from infra.persistence.backup import create_backup, restore_backup, BackupError
 
 
 def register(api,store,runtime):
@@ -34,10 +38,18 @@ def register(api,store,runtime):
         } for e in core.events.read(project_id)])
 
     @api.get('/api/v1/projects/{project_id}/infra/replay')
-    def infra_replay(project_id:str,_:Any=Depends(logged_in)):
+    def infra_replay(project_id:str,sequence:int|None=None,_:Any=Depends(logged_in)):
         project(store,project_id)
-        state=core.replay(project_id)
+        state=core.replay(project_id,sequence)
         return asdict(state)
+
+    @api.get('/api/v1/projects/{project_id}/infra/replay/compare')
+    def infra_replay_compare(project_id:str,fromSequence:int,toSequence:int,_:Any=Depends(logged_in)):
+        project(store,project_id)
+        try:
+            return core.replay_compare(project_id,fromSequence,toSequence)
+        except ValueError as exc:
+            bad(str(exc),400)
 
     @api.get('/api/v1/projects/{project_id}/infra/memory')
     def infra_memory(project_id:str,roleId:str='shared',_:Any=Depends(logged_in)):
@@ -244,12 +256,30 @@ def register(api,store,runtime):
                 'artifactCount':len(value.get('artifactIds') or []),
                 'taskRevision':value.get('taskRevision'),'createdAt':value.get('createdAt'),
                 'providerCheckpointId':value.get('providerCheckpointId'),
+                'memoryBundleId':value.get('memoryBundleId'),
+                'memorySourceRefs':value.get('memorySourceRefs') or [],
+                'memoryTokenCount':value.get('memoryTokenCount'),
+                'contextAssemblyRunId':value.get('contextAssemblyRunId'),
             })
         histories=store.execute(
             "SELECT session_id,COUNT(*) entry_count,MIN(occurred_at) first_at,MAX(occurred_at) last_at "
             "FROM history WHERE project_id=? GROUP BY session_id ORDER BY last_at DESC",(project_id,)
         ).fetchall()
-        return {'snapshots':items,'historySessions':[dict(row) for row in histories]}
+        runs=[]
+        for row in store.execute(
+            "SELECT * FROM context_assembly_runs WHERE project_id=? ORDER BY created_at DESC LIMIT 100",
+            (project_id,)
+        ).fetchall():
+            value=dict(row)
+            value['included']=json.loads(value.pop('included_json'))
+            value['excluded']=json.loads(value.pop('excluded_json'))
+            value['candidates']=json.loads(value.pop('candidates_json'))
+            runs.append(value)
+        scopes=[row[0] for row in store.execute(
+            "SELECT DISTINCT role_scope FROM memories WHERE project_id=? ORDER BY role_scope",(project_id,)
+        ).fetchall()]
+        return {'snapshots':items,'historySessions':[dict(row) for row in histories],
+                'assemblyRuns':runs,'memoryRoleScopes':scopes}
 
     @api.get('/api/v1/projects/{project_id}/infra/bank')
     def infra_bank(project_id:str,_:Any=Depends(logged_in)):
@@ -318,6 +348,97 @@ def register(api,store,runtime):
             ).fetchone()[0])
         return {'aggregates':aggregates,'outbox':outbox,'inboxCount':inbox_count,
                 'leases':leases,'sagas':sagas}
+
+    @api.get('/api/v1/infra/backups')
+    def infra_backups(_:Any=Depends(logged_in)):
+        rows=store.execute(
+            "SELECT id,kind,status,backup_id,destination,manifest_path,file_count,checksum_status,"
+            "error,created_at,completed_at FROM backup_runs ORDER BY created_at DESC LIMIT 100"
+        ).fetchall()
+        return page([dict(row) for row in rows])
+
+    @api.post('/api/v1/infra/backups',status_code=201)
+    def infra_create_backup(_:Any=Depends(logged_in)):
+        backup_root=Path(api.state.backup_dir)
+        backup_root.mkdir(parents=True,exist_ok=True)
+        backup_id=ident('backup')
+        run_id=ident('backuprun')
+        destination=backup_root/backup_id
+        created=datetime.now(timezone.utc).isoformat()
+        store.execute(
+            "INSERT INTO backup_runs(id,kind,status,backup_id,destination,created_at) VALUES(?,?,?,?,?,?)",
+            (run_id,'BACKUP','RUNNING',backup_id,str(destination),created)
+        )
+        try:
+            artifact_root=Path(api.state.artifact_dir)
+            artifact_dirs={'artifacts':artifact_root} if artifact_root.is_dir() else {}
+            create_backup(
+                destination,
+                databases={'mrlc':Path(core.database_path)},
+                artifact_dirs=artifact_dirs,
+            )
+            manifest=destination/'manifest.json'
+            payload=json.loads(manifest.read_text())
+            file_count=len(payload.get('files',[]))
+            completed=datetime.now(timezone.utc).isoformat()
+            store.execute(
+                "UPDATE backup_runs SET status='COMPLETED',manifest_path=?,file_count=?,"
+                "checksum_status='VERIFIED',completed_at=? WHERE id=?",
+                (str(manifest),file_count,completed,run_id)
+            )
+            store.audit('backup',f'Backup {backup_id} created and checksummed',level='info')
+            store.emit('infra.backup.completed',None,{'backupId':backup_id,'runId':run_id})
+            return {'id':run_id,'backupId':backup_id,'status':'COMPLETED','fileCount':file_count,
+                    'checksumStatus':'VERIFIED','createdAt':created,'completedAt':completed}
+        except Exception as exc:
+            completed=datetime.now(timezone.utc).isoformat()
+            store.execute(
+                "UPDATE backup_runs SET status='FAILED',error=?,completed_at=? WHERE id=?",
+                (str(exc)[:3000],completed,run_id)
+            )
+            store.audit('backup',f'Backup {backup_id} failed: {exc}',level='error')
+            bad(f'Backup failed: {exc}',500)
+
+    @api.post('/api/v1/infra/backups/{backup_id}/verify')
+    def infra_verify_backup(backup_id:str,_:Any=Depends(logged_in)):
+        source=store.execute(
+            "SELECT * FROM backup_runs WHERE backup_id=? AND kind='BACKUP' AND status='COMPLETED' "
+            "ORDER BY created_at DESC LIMIT 1",(backup_id,)
+        ).fetchone()
+        if source is None:
+            bad('Backup not found',404)
+        backup_root=Path(api.state.backup_dir)
+        drill_id=ident('verify')
+        run_id=ident('backuprun')
+        destination=backup_root/'verify-drills'/drill_id
+        created=datetime.now(timezone.utc).isoformat()
+        store.execute(
+            "INSERT INTO backup_runs(id,kind,status,backup_id,destination,created_at) VALUES(?,?,?,?,?,?)",
+            (run_id,'VERIFY','RUNNING',backup_id,str(destination),created)
+        )
+        try:
+            result=restore_backup(Path(source['destination']),destination)
+            completed=datetime.now(timezone.utc).isoformat()
+            store.execute(
+                "UPDATE backup_runs SET status='COMPLETED',manifest_path=?,file_count=?,"
+                "checksum_status='VERIFIED',completed_at=? WHERE id=?",
+                (str(result.manifest_path),result.files,completed,run_id)
+            )
+            shutil.rmtree(destination,ignore_errors=True)
+            store.audit('backup',f'Backup {backup_id} restore drill verified',level='info')
+            store.emit('infra.backup.verified',None,{'backupId':backup_id,'runId':run_id})
+            return {'id':run_id,'backupId':backup_id,'status':'COMPLETED',
+                    'fileCount':result.files,'checksumStatus':'VERIFIED',
+                    'createdAt':created,'completedAt':completed}
+        except Exception as exc:
+            completed=datetime.now(timezone.utc).isoformat()
+            shutil.rmtree(destination,ignore_errors=True)
+            store.execute(
+                "UPDATE backup_runs SET status='FAILED',error=?,completed_at=? WHERE id=?",
+                (str(exc)[:3000],completed,run_id)
+            )
+            store.audit('backup',f'Backup {backup_id} restore drill failed: {exc}',level='error')
+            bad(f'Backup verification failed: {exc}',500)
 
     @api.get('/api/v1/projects/{project_id}/infra/operations')
     def infra_operations(project_id:str,_:Any=Depends(logged_in)):
