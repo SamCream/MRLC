@@ -134,6 +134,24 @@ export interface InfraEvidenceNode {
 export interface InfraEvidenceChain {
   request_id:string;relation_id:string;run_state:string;chain_state:string;nodes:InfraEvidenceNode[];
 }
+export interface InfraFrontierRequest {
+  requestId:string;mode:string;ownerSessionId:string;taskOwnerSessionId:string;
+  childSessionId:string|null;advice:string|null;returnContract:string|null;
+  reviewState:string;budgetUsed:number;
+}
+export interface InfraFrontierSnapshot {
+  capabilities:{
+    consult:{available:boolean;budgetLimit:number;reason:string|null};
+    delegate:{available:boolean;reason:string|null};
+  };
+  sessions:Array<{sessionId:string;roleId:string;lifecycle:string}>;
+  tasks:Array<{taskId:string;state:string}>;
+  requests:InfraFrontierRequest[];
+}
+export interface InfraFrontierConsultResult {
+  requestId:string;projectId:string;mode:string;ownerSessionId:string;advice:string|null;
+  reviewState:string;budgetUsed:number;operationId:string;replayed:boolean;
+}
 export interface InfraProvenance {
   project_id:string;stages:string[];chains:InfraEvidenceChain[];
 }
