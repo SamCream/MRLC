@@ -69,6 +69,11 @@ export interface ProjectOverviewSnapshot {
 /** Infra Console contracts. These expose backend mechanisms, not duplicate product views. */
 export interface InfraStatus {
   mode:string; database:string; projection:string; uiEvents:string; domainEvents:string;
+  schema:{
+    appVersion:number;
+    migrations:Array<{namespace:string;version:number;name:string;checksum:string;applied_at:string}>;
+    legacyInfraSchemas:string;
+  };
   counts:Record<string,number|null>;
 }
 export interface InfraEvent {
