@@ -11,7 +11,12 @@ export interface AcceptanceCriterion { id: ID; description: string; satisfied: b
 export interface RoleTemplate { id: ID; name: string; version: string; purpose: string; capabilities: string[]; allowedPermissions: string[]; preferredModelId?: ID; lifecycle: 'draft' | 'active' | 'parked' | 'archived'; }
 export interface Agent { id: ID; projectId: ID; roleTemplateId: ID; name: string; status: AgentStatus; taskId?: ID | null; sessionId?: ID | null; lastSeenAt?: ISODateTime; }
 export interface Channel { id: ID; projectId: ID; name: string; purpose: string; contextPolicy: 'relevant' | 'task' | 'project'; }
-export interface Message { id: ID; channelId: ID; senderAgentId?: ID | null; senderName: string; content: string; createdAt: ISODateTime; artifactIds?: ID[]; stageCompletion?: { level: 'low' | 'medium' | 'high'; taskId: ID; evidenceArtifactIds: ID[]; verified: boolean; }; }
+export type KnowledgeReadiness = 'KNOWN'|'PARTIAL'|'UNKNOWN';
+export interface Message { id: ID; channelId: ID; senderAgentId?: ID | null; senderName: string; content: string; createdAt: ISODateTime; artifactIds?: ID[]; responseMode?: 'single'|'multi'; responseGroupId?: ID|null; routeReason?: string|null; knowledgeReadiness?: KnowledgeReadiness|null; knowledgeReadinessReason?: string|null; stageCompletion?: { level: 'low' | 'medium' | 'high'; taskId: ID; evidenceArtifactIds: ID[]; verified: boolean; }; }
+export interface ChannelResponseDispatch {
+  jobId:ID;jobIds:ID[];groupId:ID;status:string;responseMode:'single'|'multi';
+  agents:Array<{agentId:ID;roleId:ID;roleName:string;routeReason:string;order:number}>;
+}
 export interface Artifact { id: ID; projectId: ID; taskId?: ID; name: string; mimeType: string; version: string; status: EvidenceStatus; sizeBytes?: number; checksum?: string; downloadUrl?: string; createdAt: ISODateTime; contentAvailable?: boolean; demoMetadata?: boolean; }
 export interface ArtifactVersion { id: ID; artifactId: ID; version: string; sizeBytes?: number; checksum?: string; createdAt: ISODateTime; contentAvailable: boolean; }
 export interface EvidenceLink { id: ID; artifactId: ID; kind: 'source' | 'run' | 'task' | 'decision'; referenceId: ID; description: string; createdAt: ISODateTime; }
@@ -102,6 +107,9 @@ export interface InfraContextSnapshot {
   projection?:string|null; artifactCount:number; taskRevision?:string|null; createdAt?:string|null;
   providerCheckpointId?:string|null; memoryBundleId?:string|null;memorySourceRefs:string[];
   memoryTokenCount?:number|null;contextAssemblyRunId?:string|null;
+  responseGroupId?:string|null;responseOrder?:number|null;routeReason?:string|null;
+  knowledgeReadiness?:KnowledgeReadiness|null;knowledgeReadinessReason?:string|null;
+  knowledgeEvidenceArtifactIds?:string[];
 }
 export interface InfraContextAssemblyRun {
   id:string;project_id:string;job_id:string|null;role_id:string;profile_id:string;
