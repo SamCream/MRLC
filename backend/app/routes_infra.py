@@ -465,6 +465,16 @@ def register(api,store,runtime):
             'toolId':entry.tool_id,'roleId':entry.role_id,'result':entry.result,
             'recordedAt':entry.recorded_at.isoformat(),
         } for entry in core.mcp.access_log(project_id)[-100:]]
+        latest_backup=store.execute(
+            "SELECT id,kind,status,backup_id,destination,manifest_path,file_count,checksum_status,"
+            "error,created_at,completed_at FROM backup_runs WHERE kind='BACKUP' "
+            "ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        latest_verify=store.execute(
+            "SELECT id,kind,status,backup_id,destination,manifest_path,file_count,checksum_status,"
+            "error,created_at,completed_at FROM backup_runs WHERE kind='VERIFY' "
+            "ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
         return {
             'continuity':None if checkpoint is None else {
                 'checkpointId':checkpoint.checkpoint_id,'sessionId':checkpoint.session_id,
@@ -476,6 +486,10 @@ def register(api,store,runtime):
             },
             'mcp':{'tools':tools,'accessAudit':mcp_audit},
             'skills':skills,'workers':workers,
-            'backup':{'tracked':False,'reason':'Backup/restore is implemented but has no persistent execution registry yet.'},
+            'backup':{
+                'tracked':True,
+                'latestBackup':None if latest_backup is None else dict(latest_backup),
+                'latestVerify':None if latest_verify is None else dict(latest_verify),
+            },
         }
 
