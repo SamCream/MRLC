@@ -47,6 +47,7 @@ export default function WorkspacePage() {
       const ids:string[]=[];
       if(pendingFile){const result=await artifactRepo.uploadArtifact(projectId,pendingFile);ids.push(result.id);uploaded=true;}
       await repo.sendMessage(selected.id,draft.trim()||(pendingFile?`Attached file: ${pendingFile.name}`:''),mode,ids);
+      setLastDispatch(null);
       setDraft('');setPendingFile(null);if(fileRef.current)fileRef.current.value='';
     }
     catch(e){setActionError(`${e instanceof Error?e.message:String(e)}${uploaded?' · File was stored in Artifacts, but the message was not sent.':''}`);}
