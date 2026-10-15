@@ -1496,11 +1496,18 @@ class InfraBridge:
                 counts[name]=int(self.store.conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0])
             except Exception:
                 counts[name]=None
+        migrations=self.store.schema_migrations()
+        app_versions=[item["version"] for item in migrations if item["namespace"]=="app"]
         return {
             "mode":"migrated-infra-core",
             "database":Path(self.database_path).name,
             "projection":"objects",
             "uiEvents":"ui_events",
             "domainEvents":"events",
+            "schema":{
+                "appVersion":max(app_versions) if app_versions else 0,
+                "migrations":migrations,
+                "legacyInfraSchemas":"module-local",
+            },
             "counts":counts,
         }
