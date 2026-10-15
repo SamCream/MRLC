@@ -57,7 +57,7 @@ export function createRepositoryBundle(config:RuntimeConfiguration){
     system:withRemoteInvalidation(httpSystemRepository(services),bus,['runHealthCheck','saveLogView','deleteLogView']),
     settings:withRemoteInvalidation(httpSettingsRepository(services),bus,['updateRuntimeSettings','resetRuntimeSettings','saveAppearance','resetAppearance']),
     auth:httpAuthRepository(services),
-    infra:withRemoteInvalidation(httpInfraRepository(services),bus,[]),
+    infra:withRemoteInvalidation(httpInfraRepository(services),bus,['createBackup','verifyBackup']),
     invalidation:bus,
   };
 }
