@@ -86,7 +86,12 @@ export interface InfraSchedulerSnapshot {
 export interface InfraReplayState {
   projects:Record<string,string>; tasks:Record<string,string>; sessions:Record<string,string>;
   memories:Record<string,string>; issues:Record<string,string>; decisions:Record<string,string>;
-  artifacts:Record<string,string>; [key:string]:unknown;
+  artifacts:Record<string,string>; delegations?:Record<string,string>; leases?:Record<string,number>;
+  dependencies?:Array<[string,string]>; [key:string]:unknown;
+}
+export interface InfraReplayCompare {
+  fromSequence:number;toSequence:number;changedSections:number;
+  changes:Record<string,Array<{id:string;from:unknown;to:unknown}>|{from:unknown;to:unknown}>;
 }
 export interface InfraMemoryItem {
   memory_id:string; project_id:string; role_scope:string; kind:string; content:string;
@@ -95,11 +100,20 @@ export interface InfraMemoryItem {
 export interface InfraContextSnapshot {
   id:string; agentId?:string|null; taskId?:string|null; channelId?:string|null;
   projection?:string|null; artifactCount:number; taskRevision?:string|null; createdAt?:string|null;
-  providerCheckpointId?:string|null;
+  providerCheckpointId?:string|null; memoryBundleId?:string|null;memorySourceRefs:string[];
+  memoryTokenCount?:number|null;contextAssemblyRunId?:string|null;
+}
+export interface InfraContextAssemblyRun {
+  id:string;project_id:string;job_id:string|null;role_id:string;profile_id:string;
+  query_excerpt:string;token_budget:number;total_tokens:number;included:string[];
+  excluded:Record<string,string>;candidates:Array<{sourceRef:string;memoryId:string;
+    confidence:number;roleScope:string;retrieval:string;priority?:number}>;
+  created_at:string;
 }
 export interface InfraContextView {
   snapshots:InfraContextSnapshot[];
   historySessions:Array<{session_id:string;entry_count:number;first_at:string;last_at:string}>;
+  assemblyRuns:InfraContextAssemblyRun[];memoryRoleScopes:string[];
 }
 export interface InfraBankIssue {
   issue_id:string;project_id:string;title:string;blocking:string;decision_owner:string;
@@ -137,6 +151,15 @@ export interface InfraConsistency {
   leases:Array<{resource_id:string;holder_id:string;fencing_token:number;expires_at:number}>;
   sagas:Array<{sagaId:string;sagaType:string;state:string;payload:Record<string,unknown>}>;
 }
+export interface InfraBackupRun {
+  id:string;kind:'BACKUP'|'VERIFY'|string;status:string;backup_id:string|null;
+  destination:string|null;manifest_path:string|null;file_count:number|null;
+  checksum_status:string|null;error:string|null;created_at:string;completed_at:string|null;
+}
+export interface InfraBackupActionResult {
+  id:string;backupId:string;status:string;fileCount:number;checksumStatus:string;
+  createdAt:string;completedAt:string;
+}
 export interface InfraOperations {
   continuity:null|{checkpointId:string;sessionId:string;client:string;gitBranch:string|null;
     gitHeadSha:string|null;gitDirty:boolean;verificationStatus:string|null;blockers:string[];
@@ -146,5 +169,5 @@ export interface InfraOperations {
   skills:Array<{skillId:string;version:string;capabilities:string[]}>;
   workers:Array<{handle:string;adapter:string;session_id:string;task_id:string;fencing_token:number;
     status:string;checkpoint_ref:string|null}>;
-  backup:{tracked:boolean;reason:string};
+  backup:{tracked:boolean;reason?:string|null;latestBackup?:InfraBackupRun|null;latestVerify?:InfraBackupRun|null};
 }
