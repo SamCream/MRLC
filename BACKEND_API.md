@@ -1,6 +1,6 @@
 # MRLC v0.9.1 — executable backend API contract
 
-**Authority:** `backend/app/`; the server's OpenAPI file is `backend/openapi.json`. All paths below are relative to the **same-origin** `/api/v1` root. Business decisions, validation, project isolation, audit and persistence happen on the backend. Browser-side filtering/layout is presentation only.
+**Authority:** `backend/app/`. The authoritative OpenAPI document is generated from the live FastAPI app by `backend/scripts/export_openapi.py` and uploaded by CI as the `openapi-snapshot` artifact; no hand-maintained snapshot is authoritative. All paths below are relative to the **same-origin** `/api/v1` root. Business decisions, validation, project isolation, audit and persistence happen on the backend. Browser-side filtering/layout is presentation only.
 
 ## Authentication and errors
 
