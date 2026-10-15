@@ -28,6 +28,7 @@ jobs:
           node-version: "20"
           cache: npm
       - run: npm ci
+      - run: cp backend/.env.example backend/.env
       - run: npm run check
       - run: npm run test:all
       - run: npm run build
