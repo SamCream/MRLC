@@ -352,10 +352,10 @@ def register(api,store,runtime):
     @api.get('/api/v1/infra/backups')
     def infra_backups(_:Any=Depends(logged_in)):
         rows=store.execute(
-            "SELECT id,kind,status,backup_id,destination,manifest_path,file_count,checksum_status,"
-            "error,created_at,completed_at FROM backup_runs ORDER BY created_at DESC LIMIT 100"
+            "SELECT id,kind,status,backup_id,file_count,checksum_status,error,created_at,completed_at "
+            "FROM backup_runs ORDER BY created_at DESC LIMIT 100"
         ).fetchall()
-        return page([dict(row) for row in rows])
+        return page([{**dict(row),'storage_ref':row['backup_id']} for row in rows])
 
     @api.post('/api/v1/infra/backups',status_code=201)
     def infra_create_backup(_:Any=Depends(logged_in)):
@@ -466,14 +466,12 @@ def register(api,store,runtime):
             'recordedAt':entry.recorded_at.isoformat(),
         } for entry in core.mcp.access_log(project_id)[-100:]]
         latest_backup=store.execute(
-            "SELECT id,kind,status,backup_id,destination,manifest_path,file_count,checksum_status,"
-            "error,created_at,completed_at FROM backup_runs WHERE kind='BACKUP' "
-            "ORDER BY created_at DESC LIMIT 1"
+            "SELECT id,kind,status,backup_id,file_count,checksum_status,error,created_at,completed_at "
+            "FROM backup_runs WHERE kind='BACKUP' ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
         latest_verify=store.execute(
-            "SELECT id,kind,status,backup_id,destination,manifest_path,file_count,checksum_status,"
-            "error,created_at,completed_at FROM backup_runs WHERE kind='VERIFY' "
-            "ORDER BY created_at DESC LIMIT 1"
+            "SELECT id,kind,status,backup_id,file_count,checksum_status,error,created_at,completed_at "
+            "FROM backup_runs WHERE kind='VERIFY' ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
         return {
             'continuity':None if checkpoint is None else {
@@ -488,8 +486,8 @@ def register(api,store,runtime):
             'skills':skills,'workers':workers,
             'backup':{
                 'tracked':True,
-                'latestBackup':None if latest_backup is None else dict(latest_backup),
-                'latestVerify':None if latest_verify is None else dict(latest_verify),
+                'latestBackup':None if latest_backup is None else {**dict(latest_backup),'storage_ref':latest_backup['backup_id']},
+                'latestVerify':None if latest_verify is None else {**dict(latest_verify),'storage_ref':latest_verify['backup_id']},
             },
         }
 
