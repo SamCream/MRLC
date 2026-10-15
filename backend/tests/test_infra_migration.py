@@ -144,3 +144,27 @@ def test_dispatch_uses_migrated_scheduler_and_gateway_ledger(tmp_path):
         assert "LEASE_ACQUIRED" in domain
         assert "LEASE_EXPIRED" in domain
         assert "MODEL_INVOCATION_COMPLETED" in domain
+
+
+def test_scheduler_enqueue_is_idempotent_for_same_job(tmp_path):
+    app=create_app(db_path=str(tmp_path/"idempotent.sqlite3"),artifact_dir=str(tmp_path/"files"),
+                   password=PASSWORD,secret="s"*40,admin_token="a"*32)
+    try:
+        store=app.state.store
+        with store.tx():
+            project={"id":"project-idempotent","name":"Idempotent","description":"","status":"idle","progress":0}
+            store.change("test","project",project,project["id"])
+            role={"id":"role-idempotent","name":"Engineer","version":"v1","purpose":"",
+                  "capabilities":[],"allowedPermissions":["tasks.execute"],"preferredModelId":None,"lifecycle":"active"}
+            store.change("test","role",role)
+            session_id="session-idempotent"
+            agent={"id":"agent-idempotent","projectId":project["id"],"roleTemplateId":role["id"],
+                   "name":"E","status":"idle","taskId":None,"sessionId":session_id}
+            store.change("test","agent",agent,project["id"])
+            app.state.infra.enqueue_job(agent,project["id"],50,job_id="job-stable")
+            app.state.infra.enqueue_job(agent,project["id"],50,job_id="job-stable")
+        queued=[event for event in app.state.infra.events.read(project["id"])
+                if event.event_type=="SESSION_QUEUED" and event.payload.get("job_id")=="job-stable"]
+        assert len(queued)==1
+    finally:
+        app.state.store.close()
