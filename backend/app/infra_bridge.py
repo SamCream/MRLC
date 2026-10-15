@@ -878,6 +878,14 @@ class InfraBridge:
                     idempotency_key=f"frontier-cancel:{request_id}:task-failed",
                     task_id=run["child_task_id"],
                 )
+                self._append(
+                    project_id,"DELEGATION_FAILED",
+                    {"relation_id":run["relation_id"],"request_id":request_id,
+                     "reason":"operator cancelled before start","state":"CANCELLED"},
+                    actor_id=actor_id,
+                    idempotency_key=f"frontier-cancel:{request_id}:delegation-failed",
+                    task_id=run["parent_task_id"],
+                )
                 state="CANCELLED";signal=None
             elif run["state"]=="RUNNING" and DelegationStore.mark_cancel_requested(
                 self.store.conn,request_id
