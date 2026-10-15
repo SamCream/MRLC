@@ -13,6 +13,7 @@ import {httpWorkspaceRepository} from './httpWorkspaceRepository';
 import {httpArtifactRepository,httpApprovalRepository,httpComputeRepository} from './httpPhase4Repositories';
 import {httpSystemRepository,httpSettingsRepository} from './httpSystemRepository';
 import {InvalidationBus,withRemoteInvalidation} from './remoteInvalidation';
+import {localInfraRepository,httpInfraRepository} from './infraRepository';
 
 /** A composition root, rather than each page hard-coding a local mock. */
 export type DataSource='mock'|'http';
@@ -41,6 +42,7 @@ export function createRepositoryBundle(config:RuntimeConfiguration){
     system:localSystemRepository,
     settings:localSettingsRepository,
     auth:localAuthRepository,
+    infra:localInfraRepository,
     invalidation:null as InvalidationBus|null,
   };
   const services=createServices(new ApiClient({baseUrl:config.baseUrl}));
@@ -55,6 +57,7 @@ export function createRepositoryBundle(config:RuntimeConfiguration){
     system:withRemoteInvalidation(httpSystemRepository(services),bus,['runHealthCheck','saveLogView','deleteLogView']),
     settings:withRemoteInvalidation(httpSettingsRepository(services),bus,['updateRuntimeSettings','resetRuntimeSettings','saveAppearance','resetAppearance']),
     auth:httpAuthRepository(services),
+    infra:httpInfraRepository(services),
     invalidation:bus,
   };
 }
