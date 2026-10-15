@@ -84,8 +84,8 @@ def main() -> None:
         expect(page.get_by_text(re.compile("Restore drill .* passed checksum verification"))).to_be_visible(timeout=15_000)
 
         page.get_by_role("button",name=re.compile("Back to Control Room")).click()
-        expect(page.get_by_role("button",name="Tasks")).to_be_visible()
-        expect(page.get_by_role("button",name="Events & Replay")).to_have_count(0)
+        expect(page.locator(".sidebar .nav-item").filter(has_text="Tasks")).to_be_visible()
+        expect(page.locator(".sidebar .nav-item").filter(has_text="Events & Replay")).to_have_count(0)
 
         browser.close()
 
