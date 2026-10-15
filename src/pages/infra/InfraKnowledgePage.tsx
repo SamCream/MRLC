@@ -2,29 +2,32 @@ import {useState} from 'react';
 import {repositories} from '../../data/repositories';
 import {useAppShell} from '../../app/AppContext';
 import {useRepositoryQuery} from '../../hooks/useRepositoryQuery';
-import type {InfraMemoryItem,InfraBankView,InfraContextAssemblyRun} from '../../domain/models';
+import type {InfraMemoryItem,InfraBankView,InfraContextAssemblyRun,InfraA2cmSnapshot,InfraEvent} from '../../domain/models';
 import {InfraEmpty,InfraError,InfraPageHead,infraBadge,infraTime} from './InfraShared';
 
 const infra=repositories.infra;
 
 export default function InfraKnowledgePage(){
   const {projectId}=useAppShell();
-  const [tab,setTab]=useState<'memory'|'assembly'|'context'|'bank'>('memory');
+  const [tab,setTab]=useState<'memory'|'assembly'|'context'|'beliefs'|'bank'>('memory');
   const [roleScope,setRoleScope]=useState('shared');
   const memory=useRepositoryQuery(()=>infra.getMemory(projectId,roleScope),[projectId,roleScope],infra);
   const context=useRepositoryQuery(()=>infra.getContext(projectId),[projectId],infra);
   const bank=useRepositoryQuery(()=>infra.getBank(projectId),[projectId],infra);
+  const a2cm=useRepositoryQuery(()=>infra.getA2cm(projectId),[projectId],infra);
+  const events=useRepositoryQuery(()=>infra.getEvents(projectId),[projectId],infra);
   const memories=memory.data?.items??[];
   const scopes=Array.from(new Set(['shared',...(context.data?.memoryRoleScopes??[])]));
 
   return <section className="page infra-page">
     <InfraPageHead title="Memory & Context" description="How durable knowledge is sourced, retrieved, filtered and assembled into real provider context."/>
-    <InfraError error={memory.error||context.error||bank.error}/>
+    <InfraError error={memory.error||context.error||bank.error||a2cm.error||events.error}/>
     <div className="infra-toolbar-row">
       <div className="segmented infra-tabs">
         <button className={tab==='memory'?'active':''} onClick={()=>setTab('memory')}>Memory provenance</button>
         <button className={tab==='assembly'?'active':''} onClick={()=>setTab('assembly')}>Assembly trace</button>
         <button className={tab==='context'?'active':''} onClick={()=>setTab('context')}>Context snapshots</button>
+        <button className={tab==='beliefs'?'active':''} onClick={()=>setTab('beliefs')}>A2CM beliefs</button>
         <button className={tab==='bank'?'active':''} onClick={()=>setTab('bank')}>Project Bank records</button>
       </div>
       {tab==='memory'&&<label className="infra-inline-field"><span>Role scope</span><select value={roleScope} onChange={e=>setRoleScope(e.target.value)}>{scopes.map(scope=><option key={scope} value={scope}>{scope}</option>)}</select></label>}
@@ -44,6 +47,7 @@ export default function InfraKnowledgePage(){
       <div className="card"><div className="card-head"><h2>History persistence index</h2><span className="sub">Counts only · no chat duplication</span></div><div className="infra-list">{(context.data?.historySessions??[]).map(item=><div className="infra-list-row" key={item.session_id}><code>{item.session_id}</code><strong>{item.entry_count} entries</strong><span>{infraTime(item.last_at)}</span></div>)}{!context.loading&&!context.data?.historySessions.length&&<InfraEmpty>No Infra history stream is persisted yet.</InfraEmpty>}</div></div>
     </div>}
 
+    {tab==='beliefs'&&<A2cmPanel projectId={projectId} data={a2cm.data} events={events.data?.items??[]} loading={a2cm.loading||events.loading}/>}
     {tab==='bank'&&<BankRecords data={bank.data}/>}
   </section>;
 }
@@ -84,4 +88,96 @@ function BankRecords({data}:{data:InfraBankView|null}){
     ...(data?.progress??[]).map(x=>({id:x.progress_id,type:'PRG',state:x.status,link:String(x.artifact_refs.length)+' artifact ref(s)'})),
   ];
   return <div className="card"><div className="card-head"><h2>Project Bank record index</h2><span className="sub">Internal IDs, state and lineage only; product decision cards stay in Control Room.</span></div><div className="table-wrap"><table className="data-table infra-table"><thead><tr><th>Record</th><th>Type</th><th>State</th><th>Lineage / refs</th></tr></thead><tbody>{rows.map(row=><tr key={row.id}><td className="mono">{row.id}</td><td><span className="badge">{row.type}</span></td><td><span className={'badge '+infraBadge(row.state)}>{row.state}</span></td><td>{row.link}</td></tr>)}</tbody></table>{!rows.length&&<InfraEmpty>No Project Bank records are persisted.</InfraEmpty>}</div></div>;
+}
+
+
+function A2cmPanel({projectId,data,events,loading}:{projectId:string;data:InfraA2cmSnapshot|null;events:InfraEvent[];loading:boolean}){
+  const [content,setContent]=useState('');
+  const [eventId,setEventId]=useState('');
+  const [confidence,setConfidence]=useState(0.7);
+  const [source,setSource]=useState<'fast_tool'|'primary'|'frontier'>('fast_tool');
+  const [selectedId,setSelectedId]=useState<string|null>(null);
+  const [decision,setDecision]=useState<'PROMOTE'|'REJECT'|'DEFER'>('DEFER');
+  const [policy,setPolicy]=useState('a2cm.policy.v1');
+  const [rationale,setRationale]=useState('');
+  const [counter,setCounter]=useState('');
+  const [uncertainty,setUncertainty]=useState('');
+  const [busy,setBusy]=useState<string|null>(null);
+  const [status,setStatus]=useState<string|null>(null);
+  const [error,setError]=useState<string|null>(null);
+  const evidenceEventId=eventId||events.at(-1)?.eventId||'';
+  const selected=data?.candidates.find(item=>item.candidateId===selectedId)??data?.candidates[0]??null;
+  const reviewable=selected&&['CANDIDATE','DEFERRED'].includes(selected.status);
+
+  async function ensurePrimary(){
+    setBusy('primary');setError(null);setStatus(null);
+    try{
+      const result=await infra.a2cmEnsurePrimary(projectId);
+      setStatus((result.created?'Created':'Reused')+' A2CM Primary session '+result.sessionId+'.');
+    }catch(e){setError(e instanceof Error?e.message:String(e));}
+    finally{setBusy(null);}
+  }
+  async function observe(){
+    if(!content.trim()||!evidenceEventId)return;
+    setBusy('observe');setError(null);setStatus(null);
+    try{
+      const result=await infra.a2cmObserve(projectId,{
+        content:content.trim(),evidenceEventId,confidence,source,
+      });
+      setSelectedId(result.candidateId);setContent('');
+      setStatus('Created evidence-backed candidate '+result.candidateId+'.');
+    }catch(e){setError(e instanceof Error?e.message:String(e));}
+    finally{setBusy(null);}
+  }
+  async function review(){
+    if(!selected||!data?.activePrimarySessionId||!rationale.trim())return;
+    setBusy('review');setError(null);setStatus(null);
+    try{
+      const result=await infra.a2cmReview(projectId,selected.candidateId,{
+        primarySessionId:data.activePrimarySessionId,decision,policyVersion:policy.trim(),
+        counterevidence:counter.split('\n').map(x=>x.trim()).filter(Boolean),
+        uncertainty:uncertainty.split('\n').map(x=>x.trim()).filter(Boolean),
+        rationale:rationale.trim(),
+      });
+      setStatus(selected.candidateId+' → '+result.status+'.');
+      setRationale('');setCounter('');setUncertainty('');
+    }catch(e){setError(e instanceof Error?e.message:String(e));}
+    finally{setBusy(null);}
+  }
+
+  return <div className="infra-two-col a2cm-layout">
+    <div className="card">
+      <div className="card-head"><h2>A2CM candidate intake</h2><span className="sub">Only Domain EventStore evidence may seed a candidate.</span></div>
+      <div className="card-body infra-a2cm-form">
+        {error&&<div className="infra-error">{error}</div>}
+        {status&&<div className="infra-success">{status}</div>}
+        <label><span>Observation</span><textarea value={content} maxLength={100000} onChange={e=>setContent(e.target.value)} placeholder="A factual or hypothesis statement to enter the candidate layer."/></label>
+        <div className="infra-delegate-grid">
+          <label><span>Evidence event</span><select value={evidenceEventId} onChange={e=>setEventId(e.target.value)}>{events.slice().reverse().map(event=><option key={event.eventId} value={event.eventId}>#{event.sequence} · {event.type}</option>)}</select></label>
+          <label><span>Source</span><select value={source} onChange={e=>setSource(e.target.value as typeof source)}><option value="fast_tool">fast_tool</option><option value="primary">primary</option><option value="frontier">frontier</option></select></label>
+          <label><span>Confidence</span><input type="number" min={0} max={1} step={0.05} value={confidence} onChange={e=>setConfidence(Math.max(0,Math.min(1,Number(e.target.value))))}/></label>
+        </div>
+        <div className="infra-actions"><button className="btn primary" disabled={busy!==null||!content.trim()||!evidenceEventId} onClick={()=>void observe()}>{busy==='observe'?'Recording…':'Record candidate'}</button></div>
+      </div>
+      <div className="infra-list">
+        {(data?.candidates??[]).map(item=><button className={'infra-chain-row '+(selected?.candidateId===item.candidateId?'active':'')} key={item.candidateId} onClick={()=>setSelectedId(item.candidateId)}><code>{item.candidateId}</code><span>{Math.round(item.confidence*100)}% · {item.actorId}</span><span className={'badge '+infraBadge(item.status)}>{item.status}</span></button>)}
+        {!loading&&!data?.candidates.length&&<InfraEmpty>No A2CM belief candidate exists for this project.</InfraEmpty>}
+      </div>
+    </div>
+
+    <div className="card">
+      <div className="card-head"><h2>Primary review</h2><span className={'badge push '+(data?.capabilities.review.available?'green':'amber')}>{data?.capabilities.review.available?'ACTIVE':'NOT READY'}</span></div>
+      {!data?.capabilities.review.available?<div className="card-body"><p className="muted">{data?.capabilities.review.reason??'Loading A2CM capability state.'}</p><button className="btn primary" disabled={busy!==null} onClick={()=>void ensurePrimary()}>{busy==='primary'?'Creating…':'Enable A2CM Primary reviewer'}</button></div>:selected?<div className="card-body infra-a2cm-review">
+        <div className="infra-kv"><span>Candidate</span><code>{selected.candidateId}</code><span>Evidence</span><code>{selected.evidenceRefs.join(', ')}</code><span>Statement</span><p>{selected.statement}</p><span>Current state</span><span className={'badge '+infraBadge(selected.status)}>{selected.status}</span><span>Primary session</span><code>{data.activePrimarySessionId}</code></div>
+        {reviewable?<><div className="infra-delegate-grid">
+          <label><span>Decision</span><select value={decision} onChange={e=>setDecision(e.target.value as typeof decision)}><option>PROMOTE</option><option>REJECT</option><option>DEFER</option></select></label>
+          <label><span>Policy version</span><input value={policy} maxLength={160} onChange={e=>setPolicy(e.target.value)}/></label>
+        </div>
+        <label><span>Rationale</span><textarea value={rationale} maxLength={4000} onChange={e=>setRationale(e.target.value)} placeholder="Why this candidate should be promoted, rejected or deferred."/></label>
+        <label><span>Counterevidence · one item per line</span><textarea value={counter} onChange={e=>setCounter(e.target.value)}/></label>
+        <label><span>Known uncertainty · one item per line</span><textarea value={uncertainty} onChange={e=>setUncertainty(e.target.value)}/></label>
+        <div className="infra-actions"><button className="btn primary" disabled={busy!==null||!rationale.trim()||!policy.trim()} onClick={()=>void review()}>{busy==='review'?'Reviewing…':'Commit Primary review'}</button></div></>:<InfraEmpty>This candidate is terminal and cannot be reviewed again.</InfraEmpty>}
+      </div>:<InfraEmpty>Select a candidate to review.</InfraEmpty>}
+    </div>
+  </div>;
 }
