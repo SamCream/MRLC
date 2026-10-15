@@ -18,7 +18,7 @@ from infra.projects import Project, ProjectRegistry
 from infra.tasks import Task, TaskRegistry
 from infra.sessions import Session, SessionRegistry
 from infra.memory import MemoryStore
-from infra.project_bank import Bank
+from infra.project_bank import Bank, Decision
 from infra.consistency import ConsistencyStore
 from infra.scheduler import Scheduler, SessionMeta
 from infra.history import HistoryStore
@@ -111,7 +111,41 @@ class InfraBridge:
             self._sync_task(source, body)
         elif kind == "agent":
             self._sync_agent(source, body)
-        elif project_id and kind in {"artifact", "evidenceLink", "approval", "message", "role"}:
+        elif project_id and kind == "artifact":
+            checksum=str(body.get("checksum") or "")
+            self._append(project_id,"ARTIFACT_RECORDED",
+                         {"artifact_id":body.get("id"),"content_hash":checksum,
+                          "name":body.get("name"),"version":body.get("version")},
+                         actor_id=source,
+                         idempotency_key=self._key(f"artifact:{body.get('id')}:recorded",body),
+                         task_id=task_id)
+        elif project_id and kind == "evidenceLink":
+            self._append(project_id,"EVIDENCE_LINKED",
+                         {"evidence_link_id":body.get("id"),"artifact_id":body.get("artifactId"),
+                          "kind":body.get("kind"),"reference_id":body.get("referenceId")},
+                         actor_id=source,
+                         idempotency_key=self._key(f"evidence:{body.get('id')}:linked",body),
+                         task_id=task_id)
+        elif project_id and kind == "message":
+            channel_id=str(body.get("channelId") or "unknown")
+            actor=str(body.get("senderName") or source or "unknown")
+            content=str(body.get("content") or "")
+            occurred=str(body.get("createdAt") or datetime.now(timezone.utc).isoformat())
+            self.store.conn.execute(
+                "INSERT INTO history(project_id,session_id,actor,content,occurred_at) "
+                "SELECT ?,?,?,?,? WHERE NOT EXISTS ("
+                "SELECT 1 FROM history WHERE project_id=? AND session_id=? AND actor=? "
+                "AND content=? AND occurred_at=?)",
+                (project_id,f"channel:{channel_id}",actor,content,occurred,
+                 project_id,f"channel:{channel_id}",actor,content,occurred),
+            )
+            self._append(project_id,"MESSAGE_RECORDED",
+                         {"message_id":body.get("id"),"channel_id":channel_id,
+                          "actor":actor,"artifact_ids":body.get("artifactIds",[])},
+                         actor_id=source,
+                         idempotency_key=f"message:{body.get('id')}:recorded",
+                         task_id=task_id)
+        elif project_id and kind in {"approval", "role"}:
             payload={"kind":kind,"id":body.get("id"),"projection":body}
             self._append(project_id, f"PROJECTION_{kind.upper()}_CHANGED", payload,
                          actor_id=source, idempotency_key=self._key(f"projection:{kind}:{body.get('id')}",body),
@@ -321,6 +355,25 @@ class InfraBridge:
                       "output_tokens":int(result.get("outputTokens") or 0)},
                      actor_id="model-gateway",idempotency_key=f"compat:job:{job['id']}:provider:{status}",
                      task_id=job["target_id"] if job["kind"]=="task" else None)
+
+    def record_approval_decision(self, approval: dict, record: dict) -> None:
+        """Promote a resolved FastAPI approval decision into the authoritative Project Bank."""
+        decision=Decision(
+            decision_id=record["id"],
+            project_id=approval["projectId"],
+            title=approval.get("title") or record["id"],
+            authority=str(record.get("actor") or "owner"),
+            risk=str(approval.get("risk") or "unknown"),
+            rationale=str(record.get("reason") or record.get("decision") or ""),
+        )
+        self.bank.record_decision_in_connection(self.store.conn,decision)
+        self._append(
+            approval["projectId"],"DECISION_RECORDED",
+            {"decision_id":decision.decision_id,"title":decision.title,"supersedes":None,
+             "approval_id":approval["id"],"resolution":record.get("decision")},
+            actor_id=decision.authority,
+            idempotency_key=f"decision:{decision.decision_id}:recorded",
+        )
 
     def replay(self, project_id: str):
         return replay_project(self.events.read(project_id))
