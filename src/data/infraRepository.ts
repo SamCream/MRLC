@@ -31,7 +31,7 @@ const unavailable=async()=>{throw new Error('Infra Core requires the HTTP backen
 export const localInfraRepository:InfraRepository={
   getStatus:unavailable,getOverview:unavailable,getEvents:unavailable,getReplay:unavailable,
   compareReplay:unavailable,getScheduler:unavailable,getMemory:unavailable,getContext:unavailable,getBank:unavailable,
-  getProvenance:unavailable,getInvocations:unavailable,getConsistency:unavailable,
+  getFrontier:unavailable,frontierConsult:unavailable,getProvenance:unavailable,getInvocations:unavailable,getConsistency:unavailable,
   getOperations:unavailable,getBackups:unavailable,createBackup:unavailable,verifyBackup:unavailable,subscribe:()=>()=>{},
 };
 
