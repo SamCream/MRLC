@@ -17,8 +17,8 @@ from infra.events import Event, EventStore
 from infra.projects import Project, ProjectRegistry
 from infra.tasks import Task, TaskRegistry
 from infra.sessions import Session, SessionRegistry
-from infra.memory import MemoryStore
-from infra.project_bank import Bank, Decision
+from infra.memory import MemoryStore, MemoryItem, EvidenceItem
+from infra.project_bank import Bank, Decision, Issue, Lesson, Progress
 from infra.consistency import ConsistencyStore
 from infra.scheduler import Scheduler, SessionMeta
 from infra.history import HistoryStore
@@ -355,6 +355,98 @@ class InfraBridge:
                       "output_tokens":int(result.get("outputTokens") or 0)},
                      actor_id="model-gateway",idempotency_key=f"compat:job:{job['id']}:provider:{status}",
                      task_id=job["target_id"] if job["kind"]=="task" else None)
+
+    def record_memory(
+        self, item: MemoryItem, evidence: tuple[EvidenceItem, ...], *, actor_id: str
+    ) -> MemoryItem:
+        """Store evidence-backed Memory and its event atomically on the shared DB."""
+        for event_id in item.source_event_refs:
+            if self.store.conn.execute(
+                "SELECT 1 FROM events WHERE project_id=? AND event_id=?",
+                (item.project_id,event_id),
+            ).fetchone() is None:
+                raise ValueError(f"unknown source event for project: {event_id}")
+        for entry in evidence:
+            if self.store.conn.execute(
+                "SELECT 1 FROM events WHERE project_id=? AND event_id=?",
+                (item.project_id,entry.event_id),
+            ).fetchone() is None:
+                raise ValueError(f"unknown evidence event for project: {entry.event_id}")
+        self.memory.put_in_connection(self.store.conn,item,evidence)
+        self._append(
+            item.project_id,"MEMORY_RECORDED",
+            {"memory_id":item.memory_id,"status":item.status,"kind":item.kind,
+             "role_scope":item.role_scope,"confidence":item.confidence},
+            actor_id=actor_id,idempotency_key=f"memory:{item.memory_id}:recorded",
+        )
+        return item
+
+    def supersede_memory(
+        self, project_id: str, old_memory_id: str, new_memory_id: str, *, actor_id: str
+    ) -> None:
+        self.memory.supersede_in_connection(
+            self.store.conn,project_id,old_memory_id,new_memory_id
+        )
+        self._append(
+            project_id,"MEMORY_SUPERSEDED",
+            {"memory_id":old_memory_id,"replacement_memory_id":new_memory_id},
+            actor_id=actor_id,
+            idempotency_key=f"memory:{old_memory_id}:superseded:{new_memory_id}",
+        )
+
+    def create_issue(self, issue: Issue, *, actor_id: str) -> Issue:
+        created=self.bank.create_issue_in_connection(self.store.conn,issue)
+        self._append(
+            issue.project_id,"ISSUE_CREATED",
+            {"issue_id":issue.issue_id,"title":issue.title,"blocking":issue.blocking},
+            actor_id=actor_id,idempotency_key=f"issue:{issue.issue_id}:created",
+        )
+        return created
+
+    def record_decision(self, decision: Decision, *, actor_id: str) -> Decision:
+        recorded=self.bank.record_decision_in_connection(self.store.conn,decision)
+        self._append(
+            decision.project_id,"DECISION_RECORDED",
+            {"decision_id":decision.decision_id,"title":decision.title,
+             "supersedes":decision.supersedes},
+            actor_id=actor_id,idempotency_key=f"decision:{decision.decision_id}:recorded",
+        )
+        return recorded
+
+    def resolve_issue(
+        self, project_id: str, issue_id: str, decision_id: str, *, actor_id: str
+    ) -> Issue:
+        decision=self.bank.get_decision(project_id,decision_id)
+        if decision.project_id != project_id:
+            raise PermissionError("decision access crosses project boundary")
+        resolved=self.bank.resolve_issue_in_connection(self.store.conn,issue_id,decision_id)
+        if resolved.project_id != project_id:
+            raise PermissionError("issue access crosses project boundary")
+        self._append(
+            project_id,"ISSUE_RESOLVED",
+            {"issue_id":issue_id,"decision_id":decision_id},
+            actor_id=actor_id,idempotency_key=f"issue:{issue_id}:resolved:{decision_id}",
+        )
+        return resolved
+
+    def record_lesson(self, lesson: Lesson, *, actor_id: str) -> Lesson:
+        recorded=self.bank.record_lesson_in_connection(self.store.conn,lesson)
+        self._append(
+            lesson.project_id,"LESSON_RECORDED",
+            {"lesson_id":lesson.lesson_id,"title":lesson.title},
+            actor_id=actor_id,idempotency_key=f"lesson:{lesson.lesson_id}:recorded",
+        )
+        return recorded
+
+    def record_progress(self, progress: Progress, *, actor_id: str) -> Progress:
+        recorded=self.bank.record_progress_in_connection(self.store.conn,progress)
+        self._append(
+            progress.project_id,"PROGRESS_RECORDED",
+            {"progress_id":progress.progress_id,"milestone":progress.milestone,
+             "status":progress.status},
+            actor_id=actor_id,idempotency_key=f"progress:{progress.progress_id}:recorded",
+        )
+        return recorded
 
     def record_approval_decision(self, approval: dict, record: dict) -> None:
         """Promote a resolved FastAPI approval decision into the authoritative Project Bank."""
