@@ -24,6 +24,47 @@ def jdump(data) -> str:
     return json.dumps(data, ensure_ascii=False, separators=(',', ':'))
 
 
+class _BufferedCursor:
+    """Materialized read cursor.
+
+    Store uses one SQLite connection across FastAPI worker threads. sqlite3 cursors may
+    not be fetched after another thread starts using that same connection, even when
+    execute itself was locked. Read statements are therefore fully materialized while
+    Store.lock is held and exposed through this tiny cursor-compatible wrapper.
+    """
+    def __init__(self, rows, description=None, *, rowcount=-1, lastrowid=None):
+        self._rows=list(rows)
+        self._index=0
+        self.description=description
+        self.rowcount=rowcount
+        self.lastrowid=lastrowid
+
+    def fetchone(self):
+        if self._index>=len(self._rows):
+            return None
+        row=self._rows[self._index]
+        self._index+=1
+        return row
+
+    def fetchmany(self, size=1):
+        start=self._index
+        end=min(len(self._rows),start+max(0,int(size)))
+        self._index=end
+        return self._rows[start:end]
+
+    def fetchall(self):
+        rows=self._rows[self._index:]
+        self._index=len(self._rows)
+        return rows
+
+    def __iter__(self):
+        while True:
+            row=self.fetchone()
+            if row is None:
+                return
+            yield row
+
+
 class Store:
     def __init__(self, path: str):
         db_path = Path(path)
@@ -159,8 +200,21 @@ class Store:
                 raise
 
     def execute(self, sql: str, args=()):
+        """Execute with connection-level serialization.
+
+        SQLite's Python connection is shared by FastAPI worker threads. For statements
+        returning rows, fetching is part of the critical section; returning a live
+        sqlite3.Cursor here previously allowed concurrent requests to interleave reads
+        on the same connection and occasionally corrupt observed row values.
+        """
         with self.lock:
-            return self.conn.execute(sql, args)
+            cursor=self.conn.execute(sql,args)
+            if cursor.description is None:
+                return cursor
+            rows=cursor.fetchall()
+            return _BufferedCursor(
+                rows,cursor.description,rowcount=cursor.rowcount,lastrowid=cursor.lastrowid
+            )
 
     def obj(self, kind: str, oid: str) -> dict | None:
         row = self.execute('SELECT body FROM objects WHERE kind=? AND id=?', (kind, oid)).fetchone()
