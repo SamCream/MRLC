@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ from infra.continuity import ContinuityStore
 from infra.mcp import McpRegistry
 from infra.skills import SkillRegistry
 from infra.worker_runtime_state import WorkerRunStore
+from infra.model_gateway import ModelGateway, ModelResult
 from infra.replay import replay_project
 
 
@@ -59,6 +61,7 @@ class InfraBridge:
         self.mcp = McpRegistry(database_path)
         self.skills = SkillRegistry(database_path)
         self.worker_runs = WorkerRunStore(database_path)
+        self.model_gateway = ModelGateway({}, database_path=database_path)
         store.infra_bridge = self
         self.reconcile_projection()
 
@@ -206,6 +209,80 @@ class InfraBridge:
         if projected is None:
             raise KeyError(f"project projection missing: {project_id}")
         self._sync_project("migration",projected)
+
+    def enqueue_job(self, agent: dict, project_id: str, priority: int) -> None:
+        """Persist scheduler ownership in the same transaction as the compatibility job."""
+        sid=agent.get("sessionId")
+        if not sid:
+            raise ValueError("agent has no persistent session")
+        scheduler=Scheduler.from_connection(self.store.conn)
+        scheduler.enqueue(
+            __import__("infra.scheduler",fromlist=["SessionMeta"]).SessionMeta(
+                sid,project_id,priority=max(-100,min(int(priority),100)),task_state="RUNNABLE"
+            ),
+            now=int(time.time()),
+        )
+        scheduler.save_in_connection(self.store.conn)
+        self._append(project_id,"SESSION_QUEUED",{"session_id":sid,"priority":int(priority)},
+                     actor_id="scheduler",idempotency_key=self._key(f"compat:session:{sid}:queued",{"priority":int(priority),"at":time.time_ns()}))
+
+    def claim_next_job(self):
+        """Select a queued execution with the migrated scheduler under the caller transaction."""
+        scheduler=Scheduler.from_connection(self.store.conn)
+        selected=scheduler.dispatch(now=int(time.time()))
+        if selected is None:
+            return None
+        scheduler.save_in_connection(self.store.conn)
+        agent=next((a for a in self.store.all("agent") if a.get("sessionId")==selected.session_id),None)
+        if agent is None:
+            scheduler.finish(selected.session_id,task_state="FAILED")
+            scheduler.save_in_connection(self.store.conn)
+            return None
+        row=self.store.conn.execute(
+            "SELECT * FROM jobs WHERE agent_id=? AND status='queued' ORDER BY priority DESC,created_at LIMIT 1",
+            (agent["id"],)
+        ).fetchone()
+        if row is None:
+            scheduler.finish(selected.session_id,task_state="FAILED")
+            scheduler.save_in_connection(self.store.conn)
+            return None
+        self._append(row["project_id"],"LEASE_ACQUIRED",
+                     {"resource_id":"slot:"+selected.session_id,"fencing_token":selected.fencing_token,
+                      "session_id":selected.session_id,"job_id":row["id"]},
+                     actor_id="scheduler",idempotency_key=f"compat:job:{row['id']}:lease:{selected.fencing_token}",
+                     task_id=row["target_id"] if row["kind"]=="task" else None)
+        return dict(row)
+
+    def finish_job(self, job: dict, task_state: str) -> None:
+        agent=self.store.obj("agent",job.get("agent_id")) if job.get("agent_id") else None
+        sid=agent.get("sessionId") if agent else None
+        if not sid:
+            return
+        scheduler=Scheduler.from_connection(self.store.conn)
+        try:
+            scheduler.finish(sid,task_state=task_state)
+        except KeyError:
+            return
+        scheduler.save_in_connection(self.store.conn)
+        self._append(job["project_id"],"LEASE_EXPIRED",
+                     {"resource_id":"slot:"+sid,"session_id":sid,"job_id":job["id"]},
+                     actor_id="scheduler",idempotency_key=f"compat:job:{job['id']}:lease-expired",
+                     task_id=job["target_id"] if job["kind"]=="task" else None)
+
+    def record_provider_result(self, job: dict, result: dict, *, status: str="COMPLETED") -> None:
+        model=str(result.get("model") or "unknown")
+        provider_request_id=result.get("providerRequestId")
+        self.model_gateway.record(ModelResult(
+            job["project_id"],model,job["kind"],job["id"],None,status,
+            None if provider_request_id is None else str(provider_request_id),
+            int(result.get("inputTokens") or 0),int(result.get("outputTokens") or 0),
+        ),idempotency_key="job:"+job["id"],connection=self.store.conn)
+        self._append(job["project_id"],"MODEL_INVOCATION_"+status,
+                     {"job_id":job["id"],"model":model,"provider_request_id":provider_request_id,
+                      "input_tokens":int(result.get("inputTokens") or 0),
+                      "output_tokens":int(result.get("outputTokens") or 0)},
+                     actor_id="model-gateway",idempotency_key=f"compat:job:{job['id']}:provider:{status}",
+                     task_id=job["target_id"] if job["kind"]=="task" else None)
 
     def replay(self, project_id: str):
         return replay_project(self.events.read(project_id))
