@@ -254,6 +254,7 @@ class FrontierDelegateRunner:
         if task is not None and task[0] == "RUNNING":
             self._transition_task(conn,run,"RUNNING","FAILED")
         self._event(conn, run, "FRONTIER_DELEGATE_" + outcome, {"handle": handle})
+        self._delegation_failed(conn,run,"owner cancelled child",outcome)
 
     def _fail(self, conn, run, state, reason, returned=None):
         DelegationStore.finish(conn, run["request_id"], state, return_package=returned, error=reason)
@@ -264,6 +265,7 @@ class FrontierDelegateRunner:
         if task is not None and task[0] == "RUNNING":
             self._transition_task(conn,run,"RUNNING","FAILED")
         self._event(conn, run, "FRONTIER_DELEGATE_" + state, {"reason": reason})
+        self._delegation_failed(conn,run,reason,state)
 
     def _verify(self, worktree: Path, command: str) -> dict:
         try:
@@ -295,6 +297,16 @@ class FrontierDelegateRunner:
                 "model": "router-managed", "observed": metered["observed"], "calls": metered["calls"],
                 "unobserved_calls": metered["unobserved_calls"], "rejected_calls": metered["rejected_calls"],
                 "source": "gateway-meter", "worker_reported": reported}
+
+    def _delegation_failed(self,conn,run,reason,state):
+        self.model.infra.events.append_in_connection(conn,self.model.infra.event(
+            run["project_id"],"DELEGATION_FAILED",
+            {"relation_id":run["relation_id"],"request_id":run["request_id"],
+             "reason":str(reason)[:500],"state":state},
+            actor_id="frontier.child",actor_type="system",
+            session_id=run["child_session_id"],task_id=run["child_task_id"],
+            idempotency_key=f"delegate:{run['request_id']}:delegation-failed:{state}",
+        ))
 
     def _transition_task(self,conn,run,expected,target,*,evidence_refs=None):
         self.model.infra.tasks.transition_in_connection(
