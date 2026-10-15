@@ -27,6 +27,9 @@ const run=async()=>{
   await api.infra.bank('project/id');
   await api.infra.frontier('project/id');
   await api.infra.frontierConsult('project/id',{parentTaskId:'task/id',ownerSessionId:'session/id',capability:'review proof',budget:100,operationId:'op-1'});
+  await api.infra.frontierDelegate('project/id',{parentTaskId:'task/id',ownerSessionId:'session/id',capability:'implement proof',objective:'prove it',acceptanceCommands:['pytest -q'],budget:200,operationId:'op-2',confirmation:'RUN_DELEGATE'});
+  await api.infra.frontierCancel('project/id','request/id','operator stop');
+  await api.infra.frontierReview('project/id','request/id',{ownerSessionId:'session/id',decision:'ACCEPT',rationale:'verified'});
   await api.infra.provenance('project/id');
   await api.infra.invocations('project/id');
   await api.infra.consistency('project/id');
@@ -62,6 +65,9 @@ const run=async()=>{
     ['GET','/api/v1/projects/project%2Fid/infra/bank'],
     ['GET','/api/v1/projects/project%2Fid/infra/frontier'],
     ['POST','/api/v1/projects/project%2Fid/infra/frontier/consult'],
+    ['POST','/api/v1/projects/project%2Fid/infra/frontier/delegate'],
+    ['POST','/api/v1/projects/project%2Fid/infra/frontier/delegations/request%2Fid/cancel'],
+    ['POST','/api/v1/projects/project%2Fid/infra/frontier/delegations/request%2Fid/review'],
     ['GET','/api/v1/projects/project%2Fid/infra/provenance'],
     ['GET','/api/v1/projects/project%2Fid/infra/invocations'],
     ['GET','/api/v1/projects/project%2Fid/infra/consistency'],
@@ -83,10 +89,13 @@ const run=async()=>{
     ['POST','/api/v1/agents/agent-id/resume'],
   ]);
   assert.deepEqual(calls[2].body,{token:'custom_login_token_12345678901234567890'});
-  assert.deepEqual(calls[25].body,{reason:'finished'});
-  assert.deepEqual(calls[31].body,{projectId:'project/id',roleTemplateId:'role-id',name:'R'});
+  assert.deepEqual(calls[28].body,{reason:'finished'});
+  assert.deepEqual(calls[34].body,{projectId:'project/id',roleTemplateId:'role-id',name:'R'});
   assert.deepEqual(calls[14].body,{parentTaskId:'task/id',ownerSessionId:'session/id',capability:'review proof',budget:100,operationId:'op-1'});
+  assert.deepEqual(calls[15].body,{parentTaskId:'task/id',ownerSessionId:'session/id',capability:'implement proof',objective:'prove it',acceptanceCommands:['pytest -q'],budget:200,operationId:'op-2',confirmation:'RUN_DELEGATE'});
+  assert.deepEqual(calls[16].body,{rationale:'operator stop'});
+  assert.deepEqual(calls[17].body,{ownerSessionId:'session/id',decision:'ACCEPT',rationale:'verified'});
   assert.equal(calls.every(c=>c.authorization==='Bearer demo-token'),true);
-  console.log('PASS: 34 HTTP adapter routes including Infra Console, auth-token management, ID encoding, request bodies and bearer headers');
+  console.log('PASS: 37 HTTP adapter routes including Infra Console, auth-token management, ID encoding, request bodies and bearer headers');
 };
 run().catch(e=>{console.error(e);process.exitCode=1;});
