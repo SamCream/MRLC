@@ -324,6 +324,75 @@ def register(api,store,runtime):
         except RuntimeError as exc:
             bad(str(exc),409)
 
+    @api.post('/api/v1/projects/{project_id}/infra/frontier/delegate',status_code=202)
+    def infra_frontier_delegate(project_id:str,body:dict,principal:Any=Depends(logged_in)):
+        project(store,project_id,True)
+        if not principal.allows('tasks.execute',project_id):
+            bad('Missing permission: tasks.execute',403)
+        commands=body.get('acceptanceCommands')
+        if not isinstance(commands,list):
+            bad('acceptanceCommands must be a list',400)
+        try:
+            return core.frontier_delegate(
+                project_id=project_id,
+                parent_task_id=nonempty(body.get('parentTaskId'),'parentTaskId',160),
+                owner_session_id=nonempty(body.get('ownerSessionId'),'ownerSessionId',160),
+                capability=nonempty(body.get('capability'),'capability',500),
+                objective=nonempty(body.get('objective'),'objective',8000),
+                acceptance_commands=commands,
+                budget=body.get('budget'),
+                actor_id=principal.id,
+                operation_id=nonempty(body.get('operationId'),'operationId',128),
+                confirmation=str(body.get('confirmation') or ''),
+            )
+        except PermissionError as exc:
+            bad(str(exc),403)
+        except ValueError as exc:
+            bad(str(exc),400)
+        except RuntimeError as exc:
+            if 'not available' in str(exc):
+                bad(str(exc),503)
+            bad(str(exc),409)
+
+    @api.post('/api/v1/projects/{project_id}/infra/frontier/delegations/{request_id}/cancel')
+    def infra_frontier_cancel(project_id:str,request_id:str,body:dict,principal:Any=Depends(logged_in)):
+        project(store,project_id,True)
+        if not principal.allows('tasks.execute',project_id):
+            bad('Missing permission: tasks.execute',403)
+        try:
+            return core.frontier_cancel_delegate(
+                project_id=project_id,request_id=request_id,actor_id=principal.id,
+                rationale=nonempty(body.get('rationale'),'rationale',4000),
+            )
+        except KeyError as exc:
+            bad(str(exc),404)
+        except ValueError as exc:
+            bad(str(exc),409)
+        except RuntimeError as exc:
+            bad(str(exc),503)
+
+    @api.post('/api/v1/projects/{project_id}/infra/frontier/delegations/{request_id}/review')
+    def infra_frontier_review(project_id:str,request_id:str,body:dict,principal:Any=Depends(logged_in)):
+        project(store,project_id,True)
+        if not principal.allows('tasks.execute',project_id):
+            bad('Missing permission: tasks.execute',403)
+        try:
+            return core.frontier_review_delegate(
+                project_id=project_id,request_id=request_id,
+                owner_session_id=nonempty(body.get('ownerSessionId'),'ownerSessionId',160),
+                decision=nonempty(body.get('decision'),'decision',20),
+                actor_id=principal.id,
+                rationale=nonempty(body.get('rationale'),'rationale',4000),
+            )
+        except KeyError as exc:
+            bad(str(exc),404)
+        except PermissionError as exc:
+            bad(str(exc),403)
+        except ValueError as exc:
+            bad(str(exc),409)
+        except RuntimeError as exc:
+            bad(str(exc),503)
+
     @api.get('/api/v1/projects/{project_id}/infra/provenance')
     def infra_provenance(project_id:str,_:Any=Depends(logged_in)):
         project(store,project_id)
