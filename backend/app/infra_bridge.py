@@ -614,8 +614,42 @@ class InfraBridge:
             "sessions":sessions,"queue":queue,"priorityAdjustments":adjustments,
         }
 
-    def replay(self, project_id: str):
-        return replay_project(self.events.read(project_id))
+    def replay(self, project_id: str, sequence: int | None = None):
+        events=self.events.read(project_id)
+        if sequence is not None:
+            events=[event for event in events if event.sequence<=int(sequence)]
+        return replay_project(events)
+
+    def replay_compare(self, project_id: str, from_sequence: int, to_sequence: int) -> dict[str, Any]:
+        if from_sequence<0 or to_sequence<0:
+            raise ValueError("replay sequence must be non-negative")
+        left=self.replay(project_id,from_sequence)
+        right=self.replay(project_id,to_sequence)
+        fields=("projects","sessions","tasks","delegations","leases","issues","decisions","artifacts","memories")
+        changes={}
+        for field in fields:
+            before=getattr(left,field)
+            after=getattr(right,field)
+            keys=sorted(set(before)|set(after))
+            delta=[]
+            for key in keys:
+                old=before.get(key)
+                new=after.get(key)
+                if old!=new:
+                    delta.append({"id":key,"from":old,"to":new})
+            if delta:
+                changes[field]=delta
+        if left.dependencies!=right.dependencies:
+            changes["dependencies"]={
+                "from":[list(item) for item in left.dependencies],
+                "to":[list(item) for item in right.dependencies],
+            }
+        return {
+            "fromSequence":from_sequence,
+            "toSequence":to_sequence,
+            "changes":changes,
+            "changedSections":len(changes),
+        }
 
     def status(self) -> dict[str, Any]:
         counts={}
