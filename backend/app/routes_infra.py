@@ -261,6 +261,12 @@ def register(api,store,runtime):
                 'memorySourceRefs':value.get('memorySourceRefs') or [],
                 'memoryTokenCount':value.get('memoryTokenCount'),
                 'contextAssemblyRunId':value.get('contextAssemblyRunId'),
+                'responseGroupId':value.get('responseGroupId'),
+                'responseOrder':value.get('responseOrder'),
+                'routeReason':value.get('routeReason'),
+                'knowledgeReadiness':value.get('knowledgeReadiness'),
+                'knowledgeReadinessReason':value.get('knowledgeReadinessReason'),
+                'knowledgeEvidenceArtifactIds':value.get('knowledgeEvidenceArtifactIds') or [],
             })
         histories=store.execute(
             "SELECT session_id,COUNT(*) entry_count,MIN(occurred_at) first_at,MAX(occurred_at) last_at "
