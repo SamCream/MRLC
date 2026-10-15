@@ -67,6 +67,23 @@ class Store:
                     error TEXT, result_artifact_id TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status,created_at);
+                CREATE TABLE IF NOT EXISTS context_assembly_runs (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, job_id TEXT,
+                    role_id TEXT NOT NULL, profile_id TEXT NOT NULL,
+                    query_excerpt TEXT NOT NULL, token_budget INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL, included_json TEXT NOT NULL,
+                    excluded_json TEXT NOT NULL, candidates_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_context_assembly_project
+                    ON context_assembly_runs(project_id,created_at);
+                CREATE TABLE IF NOT EXISTS backup_runs (
+                    id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL,
+                    backup_id TEXT, destination TEXT, manifest_path TEXT,
+                    file_count INTEGER, checksum_status TEXT, error TEXT,
+                    created_at TEXT NOT NULL, completed_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_backup_runs_created ON backup_runs(created_at);
             ''')
             # Lightweight in-place migrations for Phase 8 runtime/audit fields.
             self._ensure_column('jobs','priority','INTEGER NOT NULL DEFAULT 50')
