@@ -191,6 +191,42 @@ def register(api,store:Store,runtime):
                 skipped.append({'taskId':task['id'],'reason':str(e.detail)})
         return {'queued':queued,'skipped':skipped}
 
+    @api.get('/api/v1/channels/{channel_id}/response-groups')
+    def channel_response_groups(channel_id:str,_:Any=Depends(logged_in)):
+        channel=obj_or_404(store,'channel',channel_id)
+        project(store,channel['projectId'])
+        groups=store.execute(
+            "SELECT * FROM chat_response_groups WHERE channel_id=? ORDER BY created_at DESC LIMIT 50",
+            (channel_id,),
+        ).fetchall()
+        items=[]
+        for group in groups:
+            members=[]
+            for row in store.execute(
+                "SELECT m.sequence,m.agent_id,m.job_id,m.route_reason,m.status,"
+                "j.status job_status,o.body agent_body "
+                "FROM chat_response_members m JOIN jobs j ON j.id=m.job_id "
+                "LEFT JOIN objects o ON o.kind='agent' AND o.id=m.agent_id "
+                "WHERE m.group_id=? ORDER BY m.sequence",(group['id'],),
+            ).fetchall():
+                agent=json.loads(row['agent_body']) if row['agent_body'] else {}
+                role=store.obj('role',agent.get('roleTemplateId')) if agent else None
+                members.append({
+                    'order':int(row['sequence']),'agentId':row['agent_id'],
+                    'agentName':agent.get('name',row['agent_id']),
+                    'roleId':agent.get('roleTemplateId'),'roleName':(role or {}).get('name'),
+                    'jobId':row['job_id'],'routeReason':row['route_reason'],
+                    'status':row['job_status'],
+                })
+            items.append({
+                'groupId':group['id'],'projectId':group['project_id'],
+                'channelId':group['channel_id'],'userMessageId':group['user_message_id'],
+                'responseMode':group['response_mode'],'status':group['status'],
+                'createdAt':group['created_at'],'completedAt':group['completed_at'],
+                'members':members,
+            })
+        return page(items)
+
     @api.post('/api/v1/channels/{channel_id}/respond',status_code=202)
     def request_agent_response(channel_id:str,body:dict,_:Any=Depends(logged_in)):
         if not runtime.available:bad('Model provider is not configured',503)
