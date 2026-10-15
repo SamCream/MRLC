@@ -1,6 +1,6 @@
 import type { CreateRole, UpdateRole, UpdateProject, AgentAssignment, RoleTransition } from '../data/organizationRepository';
 import { ApiClient, idSegment as id, query } from './client';
-import type { Project, Task, NewTask, Agent, RoleTemplate, Channel, Message, Artifact, ArtifactVersion, EvidenceLink, Approval, ApprovalRecord, ApprovalDecisionInput, ComputeSlot, RuntimeQueueItem, RuntimeMetrics, RuntimeBudget, RuntimeSession, AuditLog, Page, SystemHealth, SystemTopology, InfrastructureNode, Accelerator, LogFilter, LogSavedView, LogExportRequest, LogExportJob, ProjectRuntimeSettings, ProjectOverviewSnapshot, AppearanceSettings, AuthAccount, LoginTokenStatus, LoginTokenResult, InfraStatus, InfraOverview, InfraEvent, InfraReplayState, InfraSchedulerSnapshot, InfraMemoryItem, InfraContextView, InfraBankView, InfraProvenance, InfraInvocation, InfraConsistency, InfraOperations } from '../domain/models';
+import type { Project, Task, NewTask, Agent, AgentSession, RoleTemplate, Channel, Message, ChannelResponseDispatch, ChannelResponseGroup, Artifact, ArtifactVersion, EvidenceLink, Approval, ApprovalRecord, ApprovalDecisionInput, ComputeSlot, RuntimeQueueItem, RuntimeMetrics, RuntimeBudget, RuntimeSession, AuditLog, Page, SystemHealth, SystemTopology, InfrastructureNode, Accelerator, LogFilter, LogSavedView, LogExportRequest, LogExportJob, ProjectRuntimeSettings, ProjectOverviewSnapshot, AppearanceSettings, AuthAccount, LoginTokenStatus, LoginTokenResult, InfraStatus, InfraOverview, InfraEvent, InfraReplayState, InfraReplayCompare, InfraSchedulerSnapshot, InfraMemoryItem, InfraContextView, InfraBankView, InfraA2cmSnapshot, InfraA2cmCandidate, InfraA2cmPrimaryResult, InfraA2cmReviewResult, InfraFrontierSnapshot, InfraFrontierConsultResult, InfraFrontierDelegateResult, InfraFrontierDelegateAction, InfraProvenance, InfraInvocation, InfraConsistency, InfraOperations, InfraBackupRun, InfraBackupActionResult } from '../domain/models';
 
 /** Candidate REST surface; paths must be negotiated with the real backend. */
 export function createServices(http: ApiClient) {
@@ -9,15 +9,28 @@ export function createServices(http: ApiClient) {
       status:()=>http.get<InfraStatus>('/api/v1/infra/status'),
       overview:(projectId:string)=>http.get<InfraOverview>(`/api/v1/projects/${id(projectId)}/infra/overview`),
       events:(projectId:string)=>http.get<Page<InfraEvent>>(`/api/v1/projects/${id(projectId)}/infra/events`),
-      replay:(projectId:string)=>http.get<InfraReplayState>(`/api/v1/projects/${id(projectId)}/infra/replay`),
+      replay:(projectId:string,sequence?:number)=>http.get<InfraReplayState>(`/api/v1/projects/${id(projectId)}/infra/replay${query({sequence})}`),
+      replayCompare:(projectId:string,fromSequence:number,toSequence:number)=>http.get<InfraReplayCompare>(`/api/v1/projects/${id(projectId)}/infra/replay/compare${query({fromSequence,toSequence})}`),
       scheduler:(projectId:string)=>http.get<InfraSchedulerSnapshot>(`/api/v1/projects/${id(projectId)}/infra/scheduler`),
       memory:(projectId:string,roleId='shared')=>http.get<Page<InfraMemoryItem>>(`/api/v1/projects/${id(projectId)}/infra/memory${query({roleId})}`),
       context:(projectId:string)=>http.get<InfraContextView>(`/api/v1/projects/${id(projectId)}/infra/context`),
       bank:(projectId:string)=>http.get<InfraBankView>(`/api/v1/projects/${id(projectId)}/infra/bank`),
+      a2cm:(projectId:string)=>http.get<InfraA2cmSnapshot>(`/api/v1/projects/${id(projectId)}/infra/a2cm`),
+      a2cmEnsurePrimary:(projectId:string)=>http.post<InfraA2cmPrimaryResult>(`/api/v1/projects/${id(projectId)}/infra/a2cm/primary-session`,{}),
+      a2cmObserve:(projectId:string,input:{content:string;evidenceEventId:string;confidence:number;source:'fast_tool'|'primary'|'frontier'})=>http.post<InfraA2cmCandidate>(`/api/v1/projects/${id(projectId)}/infra/a2cm/observations`,input),
+      a2cmReview:(projectId:string,candidateId:string,input:{primarySessionId:string;decision:'PROMOTE'|'REJECT'|'DEFER';policyVersion:string;counterevidence:string[];uncertainty:string[];rationale:string})=>http.post<InfraA2cmReviewResult>(`/api/v1/projects/${id(projectId)}/infra/a2cm/candidates/${id(candidateId)}/review`,input),
+      frontier:(projectId:string)=>http.get<InfraFrontierSnapshot>(`/api/v1/projects/${id(projectId)}/infra/frontier`),
+      frontierConsult:(projectId:string,input:{parentTaskId:string;ownerSessionId:string;capability:string;budget:number;operationId:string})=>http.post<InfraFrontierConsultResult>(`/api/v1/projects/${id(projectId)}/infra/frontier/consult`,input),
+      frontierDelegate:(projectId:string,input:{parentTaskId:string;ownerSessionId:string;capability:string;objective:string;acceptanceCommands:string[];budget:number;operationId:string;confirmation:'RUN_DELEGATE'})=>http.post<InfraFrontierDelegateResult>(`/api/v1/projects/${id(projectId)}/infra/frontier/delegate`,input),
+      frontierCancel:(projectId:string,requestId:string,rationale:string)=>http.post<InfraFrontierDelegateAction>(`/api/v1/projects/${id(projectId)}/infra/frontier/delegations/${id(requestId)}/cancel`,{rationale}),
+      frontierReview:(projectId:string,requestId:string,input:{ownerSessionId:string;decision:'ACCEPT'|'REWORK';rationale:string})=>http.post<InfraFrontierDelegateAction>(`/api/v1/projects/${id(projectId)}/infra/frontier/delegations/${id(requestId)}/review`,input),
       provenance:(projectId:string)=>http.get<InfraProvenance>(`/api/v1/projects/${id(projectId)}/infra/provenance`),
       invocations:(projectId:string)=>http.get<Page<InfraInvocation>>(`/api/v1/projects/${id(projectId)}/infra/invocations`),
       consistency:(projectId:string)=>http.get<InfraConsistency>(`/api/v1/projects/${id(projectId)}/infra/consistency`),
       operations:(projectId:string)=>http.get<InfraOperations>(`/api/v1/projects/${id(projectId)}/infra/operations`),
+      backups:()=>http.get<Page<InfraBackupRun>>('/api/v1/infra/backups'),
+      createBackup:()=>http.post<InfraBackupActionResult>('/api/v1/infra/backups',{}),
+      verifyBackup:(backupId:string)=>http.post<InfraBackupActionResult>(`/api/v1/infra/backups/${id(backupId)}/verify`,{}),
     },
     auth:{
       me:()=>http.get<AuthAccount>('/api/v1/auth/me'),
@@ -54,7 +67,7 @@ export function createServices(http: ApiClient) {
       list: (projectId: string) => http.get<Page<Agent>>(`/api/v1/projects/${id(projectId)}/agents`),
       assign: (input: AgentAssignment) => http.post<Agent>(`/api/v1/projects/${id(input.projectId)}/agents`, input),
       get: (agentId: string) => http.get<Agent>(`/api/v1/agents/${id(agentId)}`),
-      sessions: (agentId: string) => http.get<unknown>(`/api/v1/agents/${id(agentId)}/sessions`),
+      sessions: (agentId: string) => http.get<Page<AgentSession>>(`/api/v1/agents/${id(agentId)}/sessions`),
       park: (agentId: string) => http.post<Agent>(`/api/v1/agents/${id(agentId)}/park`),
       resume: (agentId: string) => http.post<Agent>(`/api/v1/agents/${id(agentId)}/resume`),
     },
@@ -63,7 +76,8 @@ export function createServices(http: ApiClient) {
       create: (projectId: string, data: Pick<Channel, 'name' | 'purpose' | 'contextPolicy'>) => http.post<Channel>(`/api/v1/projects/${id(projectId)}/channels`, data),
       update: (channelId: string, patch: Partial<Channel>) => http.patch<Channel>(`/api/v1/channels/${id(channelId)}`, patch),
       messages: (channelId: string, cursor?: string) => http.get<Page<Message>>(`/api/v1/channels/${id(channelId)}/messages${query({cursor})}`),
-      respond: (channelId:string,agentId:string,artifactIds:string[]=[])=>http.post<{jobId:string;status:string}>(`/api/v1/channels/${id(channelId)}/respond`,{agentId,artifactIds}),
+      responseGroups: (channelId:string)=>http.get<Page<ChannelResponseGroup>>(`/api/v1/channels/${id(channelId)}/response-groups`),
+      respond: (channelId:string,agentId?:string,artifactIds:string[]=[],taskId?:string)=>http.post<ChannelResponseDispatch>(`/api/v1/channels/${id(channelId)}/respond`,{...(agentId?{agentId}:{}),artifactIds,...(taskId?{taskId}:{})}),
       send: (channelId: string, content: string, responseMode: 'single' | 'multi', artifactIds?: string[]) => http.post<Message>(`/api/v1/channels/${id(channelId)}/messages`, {content, responseMode, ...(artifactIds?.length?{artifactIds}: {})}),
       search: (channelId: string, term: string) => http.get<Page<Message>>(`/api/v1/channels/${id(channelId)}/search${query({q:term})}`),
     },

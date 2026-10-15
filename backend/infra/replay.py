@@ -21,6 +21,7 @@ class ReplayState:
     decisions: dict[str, str | None] = field(default_factory=dict)
     artifacts: dict[str, str] = field(default_factory=dict)
     memories: dict[str, str] = field(default_factory=dict)
+    beliefs: dict[str, str] = field(default_factory=dict)
 
 
 def replay_project(events: list[Event]) -> ReplayState:
@@ -39,6 +40,7 @@ def _project_events(events: list[Event]) -> ReplayState:
     decisions: dict[str, str | None] = {}
     artifacts: dict[str, str] = {}
     memories: dict[str, str] = {}
+    beliefs: dict[str, str] = {}
     for event in sorted(events, key=lambda item: (item.sequence, item.occurred_at, item.event_id)):
         payload = event.payload
         if event.event_type == "PROJECT_CREATED":
@@ -61,6 +63,8 @@ def _project_events(events: list[Event]) -> ReplayState:
             delegations[str(payload["relation_id"])] = "ACCEPTED"
         elif event.event_type == "REVIEW_REWORK":
             delegations[str(payload["relation_id"])] = "REWORK"
+        elif event.event_type == "DELEGATION_FAILED":
+            delegations[str(payload["relation_id"])] = "FAILED"
         elif event.event_type == "LEASE_ACQUIRED":
             leases[str(payload["resource_id"])] = int(payload["fencing_token"])
         elif event.event_type == "LEASE_EXPIRED":
@@ -77,6 +81,10 @@ def _project_events(events: list[Event]) -> ReplayState:
             memories[str(payload["memory_id"])] = str(payload.get("status", "ACTIVE")).upper()
         elif event.event_type == "MEMORY_SUPERSEDED":
             memories[str(payload["memory_id"])] = "SUPERSEDED"
+        elif event.event_type == "BELIEF_CANDIDATE_CREATED":
+            beliefs[str(payload["candidate_id"])] = str(payload.get("status","CANDIDATE"))
+        elif event.event_type == "BELIEF_CANDIDATE_REVIEWED":
+            beliefs[str(payload["candidate_id"])] = str(payload["status"])
     return ReplayState(
         projects=projects,
         sessions=sessions,
@@ -88,6 +96,7 @@ def _project_events(events: list[Event]) -> ReplayState:
         decisions=decisions,
         artifacts=artifacts,
         memories=memories,
+        beliefs=beliefs,
     )
 
 

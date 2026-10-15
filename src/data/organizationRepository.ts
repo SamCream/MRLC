@@ -1,4 +1,4 @@
-import type { Agent, ID, Page, Project, RoleTemplate } from '../domain/models';
+import type { Agent, AgentSession, ID, Page, Project, RoleTemplate } from '../domain/models';
 
 /** Phase 3 discovery ledger: reference/index.original.html lines 194-199, 215-222,
  * 239-242, 277-280, 299-308, 322-324, 344. See API_CATALOG.md before modifying a contract.
@@ -20,6 +20,7 @@ export interface OrganizationRepository {
   updateRole(roleId: ID, patch: UpdateRole): Promise<RoleTemplate>;
   transitionRole(roleId: ID, action: RoleTransition): Promise<RoleTemplate>;
   listAgents(projectId: ID): Promise<Page<Agent>>;
+  listAgentSessions(agentId:ID):Promise<Page<AgentSession>>;
   assignAgent(input: AgentAssignment): Promise<Agent>;
   parkAgent(agentId: ID): Promise<Agent>;
   resumeAgent(agentId: ID): Promise<Agent>;
@@ -118,6 +119,12 @@ export class LocalOrganizationRepository implements OrganizationRepository {
     role.lifecycle=action==='activate'?'active':action==='park'?'parked':'archived';this.changed();return clone(role);
   };
   listAgents = async (projectId: ID) => ({items:clone(this.db.agents.filter(a=>a.projectId===projectId))});
+  listAgentSessions = async (agentId:ID):Promise<Page<AgentSession>> => {
+    const agent=this.db.agents.find(a=>a.id===agentId);
+    if(!agent||!agent.sessionId)return {items:[]};
+    return {items:[{id:agent.sessionId,projectId:agent.projectId,agentId:agent.id,state:agent.status,
+      createdAt:new Date(0).toISOString(),lastResumedAt:null,lastParkedAt:null,providerCheckpointId:null}]};
+  };
   assignAgent = async (input: AgentAssignment) => {
     const project=this.db.projects.find(p=>p.id===input.projectId);if(!project || project.status==='archived')throw new Error('Project cannot accept new agents');
     const role=this.db.roles.find(r=>r.id===input.roleTemplateId);if(!role || role.lifecycle!=='active')throw new Error('Role template must be active');

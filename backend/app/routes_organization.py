@@ -21,10 +21,25 @@ from .storage import Store, ident, now, jdump
 def register(api,store:Store,runtime):
     # ====== Projects ======
     def project_view(p):
-        if p['status']=='archived':return p
         tasks=store.all('task',p['id'])
-        status='running' if any(t['status'] in ('running','queued') for t in tasks) else ('blocked' if any(t['status'] in ('blocked','failed') for t in tasks) else 'idle')
-        return {**p,'status':status,'progress':round(sum(t['progress'] for t in tasks)/len(tasks)) if tasks else 0}
+        agents=store.all('agent',p['id'])
+        approvals=store.all('approval',p['id'])
+        archived=p['status']=='archived'
+        status=('archived' if archived else
+                'running' if any(t['status'] in ('running','queued') for t in tasks) else
+                'blocked' if any(t['status'] in ('blocked','failed') for t in tasks) else 'idle')
+        attention={
+            'blockedTasks':sum(t['status'] in ('blocked','failed') for t in tasks),
+            'pendingApprovals':sum(a.get('status')=='pending' for a in approvals),
+            'failedAgents':sum(a.get('status')=='failed' for a in agents),
+        }
+        return {
+            **p,'status':status,
+            'progress':round(sum(t['progress'] for t in tasks)/len(tasks)) if tasks else 0,
+            'agentCount':len(agents),
+            'attentionCount':0 if archived else sum(attention.values()),
+            'attention':attention,
+        }
 
     @api.get('/api/v1/projects')
     def list_projects(principal:Any=Depends(logged_in)):
@@ -59,7 +74,7 @@ def register(api,store:Store,runtime):
         with store.tx():
             p=project(store,project_id,True)
             running=[a for a in store.all('agent',project_id) if a['status']=='working']
-            outstanding=store.execute("SELECT 1 FROM jobs WHERE project_id=? AND status IN ('queued','running') LIMIT 1",(project_id,)).fetchone()
+            outstanding=store.execute("SELECT 1 FROM jobs WHERE project_id=? AND status IN ('waiting','queued','running') LIMIT 1",(project_id,)).fetchone()
             if running or outstanding:bad('Project has running or queued jobs; finish execution before archiving',409)
             p['status']='archived';p['archiveReason']=str((body or {}).get('reason') or '')[:2000]
             for a in store.all('agent',project_id):
@@ -162,7 +177,7 @@ def register(api,store:Store,runtime):
         with store.tx():
             a=obj_or_404(store,'agent',agent_id)
             project(store,a['projectId'],True)
-            if a['status']=='working' or store.execute("SELECT 1 FROM jobs WHERE agent_id=? AND status IN ('queued','running') LIMIT 1",(agent_id,)).fetchone():
+            if a['status']=='working' or store.execute("SELECT 1 FROM jobs WHERE agent_id=? AND status IN ('waiting','queued','running') LIMIT 1",(agent_id,)).fetchone():
                 bad('Agent has an outstanding job; no checkpoint-safe park available',409)
             if a['status'] not in ('idle','paused','parked'):bad('Agent cannot be parked from current state',409)
             a['status']='parked'

@@ -40,13 +40,18 @@ class FrontierDelegateRunner:
     Integration into the project branch only happens through Parent Review (ConsoleCommands).
     """
 
-    def __init__(self, model, adapter=None, *, verify_timeout=120, meter=None):
+    def __init__(self, model, adapter=None, *, verify_timeout=120, meter=None, worker_store=None):
         self.model = model
         self.root = (Path(model.database_path).parent / "projects").resolve()
-        # Infra owns the formal worker-run metadata (see infra/worker_runtime_state.py); the
-        # delegation runtime only points at it, so no adapter ever becomes an authoritative writer.
-        self.worker_store_path = Path(model.database_path).parent / "worker-runs.sqlite3"
-        store = WorkerRunStore(self.worker_store_path)
+        # The FastAPI integration injects the same WorkerRunStore used by InfraBridge.
+        # Legacy callers may omit it, but no second store is created when an authoritative
+        # store is already available.
+        if worker_store is None:
+            self.worker_store_path = Path(model.database_path).parent / "worker-runs.sqlite3"
+            store = WorkerRunStore(self.worker_store_path)
+        else:
+            self.worker_store_path = Path(model.database_path)
+            store = worker_store
         self.worker_kind = delegate_worker_kind()
         self.adapter = adapter or self._default_adapter(store)
         self.store = store
@@ -110,7 +115,7 @@ class FrontierDelegateRunner:
                                "ORDER BY created_at LIMIT 1").fetchone()
             if run is None or not DelegationStore.claim(conn, run["request_id"]):
                 return False
-            self.model.infra.tasks.transition_in_connection(conn, run["child_task_id"], "RUNNABLE", "RUNNING")
+            self._transition_task(conn,run,"RUNNABLE","RUNNING")
             DelegationStore.set_request_state(conn, run["request_id"], "CHILD_RUNNING")
             self._event(conn, run, "FRONTIER_DELEGATE_RUNNING", {})
         try:
@@ -224,7 +229,7 @@ class FrontierDelegateRunner:
             DelegationStore.set_request_state(conn, run["request_id"], "WAIT_OWNER_REVIEW")
             Runtime.finish_in_connection(conn, run["relation_id"], "WAIT_OWNER_REVIEW",
                                          json.dumps(returned, sort_keys=True))
-            self.model.infra.tasks.transition_in_connection(conn, run["child_task_id"], "RUNNING", "COMPLETED")
+            self._transition_task(conn,run,"RUNNING","COMPLETED",evidence_refs=[f"git:{commit}"])
             self._event(conn, run, "FRONTIER_DELEGATE_READY_FOR_REVIEW",
                         {"branch": branch, "commit": commit, "changed_files": files,
                          "verification_passed": True, "relation_id": run["relation_id"],
@@ -247,8 +252,9 @@ class FrontierDelegateRunner:
                                      json.dumps({"error": "owner cancelled child", "cancel": outcome}, sort_keys=True))
         task = conn.execute("SELECT state FROM tasks WHERE task_id=?", (run["child_task_id"],)).fetchone()
         if task is not None and task[0] == "RUNNING":
-            self.model.infra.tasks.transition_in_connection(conn, run["child_task_id"], "RUNNING", "FAILED")
+            self._transition_task(conn,run,"RUNNING","FAILED")
         self._event(conn, run, "FRONTIER_DELEGATE_" + outcome, {"handle": handle})
+        self._delegation_failed(conn,run,"owner cancelled child",outcome)
 
     def _fail(self, conn, run, state, reason, returned=None):
         DelegationStore.finish(conn, run["request_id"], state, return_package=returned, error=reason)
@@ -257,8 +263,9 @@ class FrontierDelegateRunner:
                                      json.dumps({"error": reason, **(returned or {})}, sort_keys=True))
         task = conn.execute("SELECT state FROM tasks WHERE task_id=?", (run["child_task_id"],)).fetchone()
         if task is not None and task[0] == "RUNNING":
-            self.model.infra.tasks.transition_in_connection(conn, run["child_task_id"], "RUNNING", "FAILED")
+            self._transition_task(conn,run,"RUNNING","FAILED")
         self._event(conn, run, "FRONTIER_DELEGATE_" + state, {"reason": reason})
+        self._delegation_failed(conn,run,reason,state)
 
     def _verify(self, worktree: Path, command: str) -> dict:
         try:
@@ -291,8 +298,39 @@ class FrontierDelegateRunner:
                 "unobserved_calls": metered["unobserved_calls"], "rejected_calls": metered["rejected_calls"],
                 "source": "gateway-meter", "worker_reported": reported}
 
+    def _delegation_failed(self,conn,run,reason,state):
+        self.model.infra.events.append_in_connection(conn,self.model.infra.event(
+            run["project_id"],"DELEGATION_FAILED",
+            {"relation_id":run["relation_id"],"request_id":run["request_id"],
+             "reason":str(reason)[:500],"state":state},
+            actor_id="frontier.child",actor_type="system",
+            session_id=run["child_session_id"],task_id=run["child_task_id"],
+            idempotency_key=f"delegate:{run['request_id']}:delegation-failed:{state}",
+        ))
+
+    def _transition_task(self,conn,run,expected,target,*,evidence_refs=None):
+        self.model.infra.tasks.transition_in_connection(
+            conn,run["child_task_id"],expected,target
+        )
+        self.model.infra.events.append_in_connection(conn,self.model.infra.event(
+            run["project_id"],"TASK_STATE_CHANGED",
+            {"from":expected,"to":target,"evidence_refs":list(evidence_refs or [])},
+            actor_id="frontier.child",actor_type="system",
+            session_id=run["child_session_id"],task_id=run["child_task_id"],
+            idempotency_key=f"delegate:{run['request_id']}:task:{expected}:{target}",
+        ))
+
     def _event(self, conn, run, kind, payload):
         self.model.infra.events.append_in_connection(conn, self.model.infra.event(
             run["project_id"], kind, {"request_id": run["request_id"], **payload},
             actor_id="frontier.child", actor_type="system", session_id=run["child_session_id"],
             task_id=run["child_task_id"], idempotency_key=f"delegate:{run['request_id']}:{kind}"))
+        if kind=="FRONTIER_DELEGATE_READY_FOR_REVIEW":
+            self.model.infra.events.append_in_connection(conn,self.model.infra.event(
+                run["project_id"],"CHILD_COMPLETE",
+                {"relation_id":run["relation_id"],
+                 "result":json.dumps({"commit":payload.get("commit"),"branch":payload.get("branch")},sort_keys=True)},
+                actor_id="frontier.child",actor_type="system",
+                session_id=run["child_session_id"],task_id=run["child_task_id"],
+                idempotency_key=f"delegate:{run['request_id']}:child-complete",
+            ))

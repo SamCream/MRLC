@@ -120,4 +120,16 @@ class RetrievalPipeline:
 
     @staticmethod
     def _tokens(text: str) -> tuple[str, ...]:
-        return tuple(re.findall(r"[a-z0-9_]+", text.casefold()))
+        """Language-tolerant lexical tokens.
+
+        Latin text keeps word tokens. CJK text adds overlapping bi-grams so Chinese
+        project memory can participate in the same deterministic BM25 pipeline rather
+        than collapsing into an empty query.
+        """
+        folded=text.casefold()
+        latin=re.findall(r"[a-z0-9_]+",folded)
+        cjk="".join(re.findall(r"[\u3400-\u9fff]",folded))
+        cjk_tokens=[cjk[i:i+2] for i in range(max(0,len(cjk)-1))]
+        if len(cjk)==1:
+            cjk_tokens=[cjk]
+        return tuple(latin+cjk_tokens)

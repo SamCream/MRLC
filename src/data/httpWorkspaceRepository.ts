@@ -7,6 +7,7 @@ export function httpWorkspaceRepository(api: Services): WorkspaceRepository {
     listChannels: api.channels.list,
     createChannel: api.channels.create,
     listMessages: api.channels.messages,
+    listResponseGroups: api.channels.responseGroups,
     sendMessage: api.channels.send,
     listTasks: api.tasks.list,
     createTask: api.tasks.create,

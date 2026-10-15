@@ -21,6 +21,36 @@ class WorkingExecutor:
         assert messages and messages[0]['role']=='user'
         return '# Genuine test executor response\nProof draft with assumptions.'
 
+
+class SerialProbeExecutor:
+    available=True
+    model='serial-probe'
+    capabilities={'chatCompletions':True}
+    def __init__(self):
+        import threading
+        self.lock=threading.Lock()
+        self.active=0
+        self.max_active=0
+        self.calls=[]
+    async def complete_result(self,system_prompt,messages):
+        import asyncio
+        with self.lock:
+            self.active+=1
+            self.max_active=max(self.max_active,self.active)
+            call_index=len(self.calls)+1
+            self.calls.append({'system':system_prompt,'messages':messages})
+        try:
+            await asyncio.sleep(.12)
+            return {
+                'content':f'Serial response {call_index}',
+                'model':self.model,'inputTokens':7,'outputTokens':3,
+                'costUsd':None,'usageReported':True,
+                'providerRequestId':f'serial-{call_index}',
+            }
+        finally:
+            with self.lock:
+                self.active-=1
+
 @pytest.fixture
 def setup(tmp_path):
     path=str(tmp_path/'data.sqlite')
@@ -210,6 +240,175 @@ def test_agent_replies_only_when_requested_and_authorized(tmp_path):
         assert msgs[-1]['senderAgentId']==aid
         assert 'Genuine test executor response' in msgs[-1]['content']
         assert c.get(f'/api/v1/agents/{aid}/knowledge').json()['status']=='UNKNOWN'
+
+
+
+
+def test_backend_routes_and_serializes_multi_role_replies_with_unknown_readiness(tmp_path):
+    executor=SerialProbeExecutor()
+    app=create_app(
+        db_path=str(tmp_path/'multi-chat.sqlite'),artifact_dir=str(tmp_path/'files'),
+        password=PASSWORD,secret=SECRET,executor=executor,
+    )
+    with TestClient(app) as c:
+        c.post('/api/v1/auth/login',json={'password':PASSWORD})
+        pid=add_project(c,'Multi chat')
+        engineer=c.post('/api/v1/roles',json={
+            'name':'Engineer','purpose':'Implement code and debug systems',
+            'capabilities':['Implement','Debug'],'allowedPermissions':['messages.reply'],
+            'lifecycle':'active',
+        });assert engineer.status_code==201,engineer.text
+        reviewer=c.post('/api/v1/roles',json={
+            'name':'Reviewer','purpose':'Review code and critique evidence',
+            'capabilities':['Review','Critique'],'allowedPermissions':['messages.reply'],
+            'lifecycle':'active',
+        });assert reviewer.status_code==201,reviewer.text
+        eng_agent=add_agent(c,pid,engineer.json()['id'])
+        rev_agent=c.post(f'/api/v1/projects/{pid}/agents',json={
+            'projectId':pid,'roleTemplateId':reviewer.json()['id'],'name':'Reviewer'
+        });assert rev_agent.status_code==201,rev_agent.text
+
+        channel=c.post(f'/api/v1/projects/{pid}/channels',json={
+            'name':'engineering','purpose':'implementation review','contextPolicy':'relevant'
+        }).json()['id']
+        sent=c.post(f'/api/v1/channels/{channel}/messages',json={
+            'content':'Please implement and debug the code, then review the result.',
+            'responseMode':'multi',
+        })
+        assert sent.status_code==201,sent.text
+        assert sent.json()['responseMode']=='multi'
+
+        dispatched=c.post(f'/api/v1/channels/{channel}/respond',json={})
+        assert dispatched.status_code==202,dispatched.text
+        dispatch=dispatched.json()
+        assert dispatch['responseMode']=='multi'
+        assert len(dispatch['jobIds'])==2
+        assert [item['roleName'] for item in dispatch['agents']]==['Engineer','Reviewer']
+        jobs={row['id']:row for row in c.get('/api/v1/runtime/jobs').json()['items']}
+        assert jobs[dispatch['jobIds'][1]]['status']=='waiting'
+
+        deadline=time.monotonic()+8
+        while time.monotonic()<deadline:
+            jobs={row['id']:row for row in c.get('/api/v1/runtime/jobs').json()['items']}
+            if all(jobs[job_id]['status'] in {'completed','failed','cancelled'}
+                   for job_id in dispatch['jobIds']):
+                break
+            time.sleep(.05)
+        assert [jobs[job_id]['status'] for job_id in dispatch['jobIds']]==['completed','completed']
+        assert executor.max_active==1
+        assert len(executor.calls)==2
+        assert all('Knowledge readiness is UNKNOWN' in call['system'] for call in executor.calls)
+
+        messages=c.get(f'/api/v1/channels/{channel}/messages').json()['items']
+        replies=[message for message in messages if message.get('senderAgentId')]
+        assert len(replies)==2
+        assert [message['senderName'] for message in replies]==['Engineer','Reviewer']
+        assert all(message['knowledgeReadiness']=='UNKNOWN' for message in replies)
+        assert all(message['responseGroupId']==dispatch['groupId'] for message in replies)
+
+        contexts=c.get(f'/api/v1/projects/{pid}/infra/context').json()['snapshots']
+        grouped=[item for item in contexts if item.get('responseGroupId')==dispatch['groupId']]
+        assert len(grouped)==2
+        assert {item['knowledgeReadiness'] for item in grouped}=={'UNKNOWN'}
+        domain=[event['type'] for event in c.get(f'/api/v1/projects/{pid}/infra/events').json()['items']]
+        assert domain.count('KNOWLEDGE_READINESS_ASSESSED')==2
+
+
+
+
+def test_task_scoped_verified_attachment_produces_known_readiness(tmp_path):
+    executor=SerialProbeExecutor()
+    app=create_app(
+        db_path=str(tmp_path/'known-chat.sqlite'),artifact_dir=str(tmp_path/'files'),
+        password=PASSWORD,secret=SECRET,executor=executor,
+    )
+    with TestClient(app) as c:
+        c.post('/api/v1/auth/login',json={'password':PASSWORD})
+        pid=add_project(c,'Known readiness')
+        rid=add_role(c);aid=add_agent(c,pid,rid)
+        task=add_task(c,pid,rid,criteria=[{'description':'Verified proof evidence'}])
+        artifact=c.post(
+            f'/api/v1/projects/{pid}/artifacts',
+            data={'taskId':task['id']},
+            files={'file':('proof.txt',b'proof evidence bytes','text/plain')},
+        )
+        assert artifact.status_code==201,artifact.text
+        art=artifact.json()
+        criterion=task['acceptanceCriteria'][0]['id']
+        verified=c.post(
+            f'/api/v1/tasks/{task["id"]}/criteria/{criterion}/verify',
+            json={'evidenceArtifactIds':[art['id']]},
+        )
+        assert verified.status_code==200,verified.text
+        channel=c.post(f'/api/v1/projects/{pid}/channels',json={
+            'name':'task-context','purpose':'task evidence','contextPolicy':'task'
+        }).json()['id']
+        sent=c.post(f'/api/v1/channels/{channel}/messages',json={
+            'content':'Summarize only what the verified proof supports.',
+            'responseMode':'single','artifactIds':[art['id']],
+        })
+        assert sent.status_code==201,sent.text
+
+        dispatch=c.post(f'/api/v1/channels/{channel}/respond',json={
+            'agentId':aid,'taskId':task['id'],
+        })
+        assert dispatch.status_code==202,dispatch.text
+        job_id=dispatch.json()['jobId']
+        deadline=time.monotonic()+6
+        while time.monotonic()<deadline:
+            row=next(item for item in c.get('/api/v1/runtime/jobs').json()['items']
+                     if item['id']==job_id)
+            if row['status'] in {'completed','failed','cancelled'}:
+                break
+            time.sleep(.05)
+        assert row['status']=='completed',row
+        assert executor.calls and 'Knowledge readiness is KNOWN' in executor.calls[0]['system']
+        reply=c.get(f'/api/v1/channels/{channel}/messages').json()['items'][-1]
+        assert reply['knowledgeReadiness']=='KNOWN'
+        assert 'All scoped task acceptance criteria' in reply['knowledgeReadinessReason']
+        ctx=c.get(f'/api/v1/runtime/jobs/{job_id}/context').json()
+        assert ctx['knowledgeReadiness']=='KNOWN'
+        assert art['id'] in ctx['knowledgeEvidenceArtifactIds']
+        # Message attachment was propagated automatically; /respond did not repeat artifactIds.
+        assert art['id'] in ctx['artifactIds']
+
+
+def test_explicit_role_mention_beats_responsibility_routing(tmp_path):
+    executor=SerialProbeExecutor()
+    app=create_app(
+        db_path=str(tmp_path/'mention-chat.sqlite'),artifact_dir=str(tmp_path/'files'),
+        password=PASSWORD,secret=SECRET,executor=executor,
+    )
+    with TestClient(app) as c:
+        c.post('/api/v1/auth/login',json={'password':PASSWORD})
+        pid=add_project(c,'Mention routing')
+        engineer=c.post('/api/v1/roles',json={
+            'name':'Engineer','purpose':'Review and implement code',
+            'capabilities':['Review','Implement'],'allowedPermissions':['messages.reply'],
+            'lifecycle':'active',
+        }).json()
+        reviewer=c.post('/api/v1/roles',json={
+            'name':'Reviewer','purpose':'Review and critique code',
+            'capabilities':['Review','Critique'],'allowedPermissions':['messages.reply'],
+            'lifecycle':'active',
+        }).json()
+        add_agent(c,pid,engineer['id'])
+        reviewer_agent=c.post(f'/api/v1/projects/{pid}/agents',json={
+            'projectId':pid,'roleTemplateId':reviewer['id'],'name':'Reviewer'
+        }).json()
+        channel=c.post(f'/api/v1/projects/{pid}/channels',json={
+            'name':'review','purpose':'','contextPolicy':'relevant'
+        }).json()['id']
+        sent=c.post(f'/api/v1/channels/{channel}/messages',json={
+            'content':'@Reviewer please review this implementation.','responseMode':'single'
+        })
+        assert sent.status_code==201,sent.text
+        route=c.post(f'/api/v1/channels/{channel}/respond',json={})
+        assert route.status_code==202,route.text
+        assert route.json()['agents']==[{
+            'agentId':reviewer_agent['id'],'roleId':reviewer['id'],
+            'roleName':'Reviewer','routeReason':'explicit_mention','order':1,
+        }]
 
 
 def test_logout_origin_guards_and_server_appearance(setup):

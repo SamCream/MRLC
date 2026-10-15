@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "src/**"
+      - "backend/**"
+      - "scripts/**"
       - "tests/**"
       - "package.json"
       - "package-lock.json"
@@ -12,8 +14,11 @@ on:
     branches:
       - "main"
       - "feat/infra-console-ui"
+      - "feat/complete-infra-runtime-integration"
     paths:
       - "src/**"
+      - "backend/**"
+      - "scripts/**"
       - "tests/**"
       - "package.json"
       - "package-lock.json"
@@ -33,3 +38,58 @@ jobs:
       - run: npm run check
       - run: npm run test:all
       - run: npm run build
+
+  browser-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - run: python -m pip install -r backend/requirements-dev.txt playwright==1.55.0
+      - run: python -m playwright install --with-deps chromium
+      - name: Configure E2E backend
+        run: |
+          cat > backend/.env <<'EOF'
+          MRLC_HOST=127.0.0.1
+          MRLC_PORT=8080
+          MRLC_DEV_HOST=127.0.0.1
+          MRLC_DEV_PORT=5173
+          MRLC_ADMIN_PASSWORD=test-password-very-long
+          MRLC_ADMIN_TOKEN=test-admin-token-very-long-and-independent-12345
+          MRLC_SESSION_SECRET=test-signing-key-longer-than-thirty-two-chars-12345
+          MRLC_DB_PATH=./var/e2e.sqlite3
+          MRLC_ARTIFACT_DIR=./var/e2e-artifacts
+          MRLC_BACKUP_DIR=./var/e2e-backups
+          MRLC_ALLOWED_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
+          MRLC_MAX_CONCURRENT_JOBS=2
+          EOF
+      - name: Run real browser E2E
+        run: |
+          set -euo pipefail
+          rm -rf backend/var/e2e.sqlite3 backend/var/e2e-artifacts backend/var/e2e-backups
+          ./scripts/run.sh dev >/tmp/mrlc-e2e.log 2>&1 &
+          stack_pid=$!
+          cleanup() {
+            kill "$stack_pid" 2>/dev/null || true
+            wait "$stack_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for i in $(seq 1 60); do
+            if curl -s http://127.0.0.1:8080/api/v1/auth/me >/dev/null && curl -sf http://127.0.0.1:5173 >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$stack_pid" 2>/dev/null; then
+              cat /tmp/mrlc-e2e.log
+              exit 1
+            fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:5173 >/dev/null || { cat /tmp/mrlc-e2e.log; exit 1; }
+          python tests/e2e_infra.py || { cat /tmp/mrlc-e2e.log; exit 1; }

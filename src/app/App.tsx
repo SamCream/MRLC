@@ -82,6 +82,12 @@ export default function App({onLogout}:{onLogout?:()=>Promise<void>}){
   const query=commandQuery.trim().toLowerCase();
   const matches=paletteItems.filter(([, ,label])=>!query||label.toLowerCase().includes(query)).slice(0,12);
   const ActivePage=pages.find(([id])=>id===page)?.[1]??(infraMode?InfraOverviewPage:OverviewPage);
+  const projectScoped=new Set<PageId>([
+    'overview','workspace','tasks','artifacts','agents','approvals',
+    'infra-overview','infra-events','infra-scheduler','infra-knowledge',
+    'infra-provenance','infra-invocations','infra-consistency',
+  ]);
+  const needsProject=projectScoped.has(page);
   const close=()=>setOverlay(null);
   const mobilePrimary:NavItem[]=infraMode?infraNav.slice(0,3):[['overview','⌂','Overview'],['workspace','◎','Workspace'],['tasks','◫','Tasks']];
   const mobileMoreItems:NavItem[]=infraMode?infraNav.slice(3):[...management,['agents','♧','Agents'],['artifacts','▱','Artifacts'],...system];
@@ -118,7 +124,7 @@ export default function App({onLogout}:{onLogout?:()=>Promise<void>}){
             <button className="nav-mode-switch" onClick={()=>go('infra-overview')}><span>⇄</span><span><strong>Switch to Infra Core</strong><small>Events, replay &amp; consistency</small></span></button>
           </>}
         </aside>
-        <main className="main">{error&&<p role="alert">Failed to load projects: {error}</p>}<div key={projectId+':'+page} className="react-page-slot"><ActivePage/></div></main>
+        <main className="main">{error&&<p role="alert">Failed to load projects: {error}</p>}<div key={projectId+':'+page} className="react-page-slot">{needsProject&&!projectId?<section className="page"><div className="card"><div className="card-body"><p className="muted">{loading?'Loading projects…':'Create or select a project to open this page.'}</p></div></div></section>:<ActivePage/>}</div></main>
       </div>
     </div>
 

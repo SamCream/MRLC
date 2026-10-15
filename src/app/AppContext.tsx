@@ -10,7 +10,7 @@ const validPage = (value: string): value is PageId => pageIds.some(x => x===valu
 type ShellState = { page: PageId; navigate: (page: PageId) => void; projectId: string; setProjectId: (id: string) => void; project: Project | null; projects: Project[]; loading: boolean; error: string | null };
 const AppContext = createContext<ShellState | null>(null);
 const PROJECT_KEY = 'mrlc.selectedProject.v3';
-function savedProject(): string { try { return localStorage.getItem(PROJECT_KEY) || 'project-1'; } catch { return 'project-1'; } }
+function savedProject(): string { try { return localStorage.getItem(PROJECT_KEY) || ''; } catch { return ''; } }
 function currentPage(): PageId { const value=location.hash.slice(1);return validPage(value)?value:'overview'; }
 
 export function AppProvider({children}:{children: ReactNode}) {
@@ -36,7 +36,7 @@ export function AppProvider({children}:{children: ReactNode}) {
     }
   },[project,result.loading,projects]);
   const setProjectId = useCallback((id:string)=>setProjectIdState(id),[]);
-  useEffect(()=>{try{localStorage.setItem(PROJECT_KEY,projectId);}catch{/* memory-only */}},[projectId]);
+  useEffect(()=>{try{if(projectId)localStorage.setItem(PROJECT_KEY,projectId);else localStorage.removeItem(PROJECT_KEY);}catch{/* memory-only */}},[projectId]);
   const value = useMemo(()=>({page,navigate,projectId,project,projects,loading:result.loading,error:result.error,setProjectId}),[page,navigate,projectId,project,projects,result.loading,result.error,setProjectId]);
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

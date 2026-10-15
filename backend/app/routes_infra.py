@@ -5,7 +5,10 @@ No current React page depends on these routes; they are intentionally additive.
 from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime, timezone
+from pathlib import Path
 import json
+import os
+import shutil
 import time
 from typing import Any
 from fastapi import Depends
@@ -14,6 +17,8 @@ from .storage import ident
 from infra.memory import MemoryItem, EvidenceItem
 from infra.project_bank import Issue, Decision, Lesson, Progress
 from infra.evidence_graph import evidence_chains
+from infra.persistence.backup import create_backup, restore_backup, BackupError
+from infra.frontier import FrontierAdvisorUnavailable
 
 
 def register(api,store,runtime):
@@ -34,10 +39,18 @@ def register(api,store,runtime):
         } for e in core.events.read(project_id)])
 
     @api.get('/api/v1/projects/{project_id}/infra/replay')
-    def infra_replay(project_id:str,_:Any=Depends(logged_in)):
+    def infra_replay(project_id:str,sequence:int|None=None,_:Any=Depends(logged_in)):
         project(store,project_id)
-        state=core.replay(project_id)
+        state=core.replay(project_id,sequence)
         return asdict(state)
+
+    @api.get('/api/v1/projects/{project_id}/infra/replay/compare')
+    def infra_replay_compare(project_id:str,fromSequence:int,toSequence:int,_:Any=Depends(logged_in)):
+        project(store,project_id)
+        try:
+            return core.replay_compare(project_id,fromSequence,toSequence)
+        except ValueError as exc:
+            bad(str(exc),400)
 
     @api.get('/api/v1/projects/{project_id}/infra/memory')
     def infra_memory(project_id:str,roleId:str='shared',_:Any=Depends(logged_in)):
@@ -244,12 +257,36 @@ def register(api,store,runtime):
                 'artifactCount':len(value.get('artifactIds') or []),
                 'taskRevision':value.get('taskRevision'),'createdAt':value.get('createdAt'),
                 'providerCheckpointId':value.get('providerCheckpointId'),
+                'memoryBundleId':value.get('memoryBundleId'),
+                'memorySourceRefs':value.get('memorySourceRefs') or [],
+                'memoryTokenCount':value.get('memoryTokenCount'),
+                'contextAssemblyRunId':value.get('contextAssemblyRunId'),
+                'responseGroupId':value.get('responseGroupId'),
+                'responseOrder':value.get('responseOrder'),
+                'routeReason':value.get('routeReason'),
+                'knowledgeReadiness':value.get('knowledgeReadiness'),
+                'knowledgeReadinessReason':value.get('knowledgeReadinessReason'),
+                'knowledgeEvidenceArtifactIds':value.get('knowledgeEvidenceArtifactIds') or [],
             })
         histories=store.execute(
             "SELECT session_id,COUNT(*) entry_count,MIN(occurred_at) first_at,MAX(occurred_at) last_at "
             "FROM history WHERE project_id=? GROUP BY session_id ORDER BY last_at DESC",(project_id,)
         ).fetchall()
-        return {'snapshots':items,'historySessions':[dict(row) for row in histories]}
+        runs=[]
+        for row in store.execute(
+            "SELECT * FROM context_assembly_runs WHERE project_id=? ORDER BY created_at DESC LIMIT 100",
+            (project_id,)
+        ).fetchall():
+            value=dict(row)
+            value['included']=json.loads(value.pop('included_json'))
+            value['excluded']=json.loads(value.pop('excluded_json'))
+            value['candidates']=json.loads(value.pop('candidates_json'))
+            runs.append(value)
+        scopes=[row[0] for row in store.execute(
+            "SELECT DISTINCT role_scope FROM memories WHERE project_id=? ORDER BY role_scope",(project_id,)
+        ).fetchall()]
+        return {'snapshots':items,'historySessions':[dict(row) for row in histories],
+                'assemblyRuns':runs,'memoryRoleScopes':scopes}
 
     @api.get('/api/v1/projects/{project_id}/infra/bank')
     def infra_bank(project_id:str,_:Any=Depends(logged_in)):
@@ -265,6 +302,167 @@ def register(api,store,runtime):
         for row in store.execute("SELECT * FROM bank_progress WHERE project_id=? ORDER BY rowid DESC",(project_id,)).fetchall():
             value=dict(row);value['artifact_refs']=list(filter(None,str(value.get('artifact_refs') or '').split('\n')));progress.append(value)
         return {'issues':issues,'decisions':decisions,'lessons':lessons,'progress':progress}
+
+    @api.get('/api/v1/projects/{project_id}/infra/a2cm')
+    def infra_a2cm(project_id:str,_:Any=Depends(logged_in)):
+        project(store,project_id)
+        return core.a2cm_snapshot(project_id)
+
+    @api.post('/api/v1/projects/{project_id}/infra/a2cm/primary-session',status_code=201)
+    def infra_a2cm_primary(project_id:str,principal:Any=Depends(logged_in)):
+        project(store,project_id,True)
+        if not principal.allows('approvals.decide',project_id):
+            bad('Missing permission: approvals.decide',403)
+        with store.tx():
+            return core.ensure_a2cm_primary(project_id,actor_id=principal.id)
+
+    @api.post('/api/v1/projects/{project_id}/infra/a2cm/observations',status_code=201)
+    def infra_a2cm_observation(project_id:str,body:dict,principal:Any=Depends(logged_in)):
+        project(store,project_id,True)
+        if not principal.allows('tasks.execute',project_id):
+            bad('Missing permission: tasks.execute',403)
+        try:
+            confidence=float(body.get('confidence',0.5))
+        except (TypeError,ValueError):
+            bad('confidence must be numeric',400)
+        source=str(body.get('source') or 'fast_tool')
+        if source not in {'fast_tool','primary','frontier'}:
+            bad('source must be fast_tool, primary or frontier',400)
+        try:
+            with store.tx():
+                return core.record_a2cm_observation(
+                    project_id=project_id,actor_id=principal.id,
+                    content=nonempty(body.get('content'),'content',100000),
+                    evidence_event_id=nonempty(body.get('evidenceEventId'),'evidenceEventId',160),
+                    confidence=confidence,source=source,
+                )
+        except (ValueError,PermissionError) as exc:
+            bad(str(exc),400)
+
+    @api.post('/api/v1/projects/{project_id}/infra/a2cm/candidates/{candidate_id}/review')
+    def infra_a2cm_review(project_id:str,candidate_id:str,body:dict,principal:Any=Depends(logged_in)):
+        project(store,project_id,True)
+        if not principal.allows('approvals.decide',project_id):
+            bad('Missing permission: approvals.decide',403)
+        counter=tuple(list_of_str(body.get('counterevidence',[]),'counterevidence'))
+        uncertainty=tuple(list_of_str(body.get('uncertainty',[]),'uncertainty'))
+        if len(counter)>20 or len(uncertainty)>20:
+            bad('counterevidence/uncertainty support at most 20 entries each',400)
+        if any(len(item)>1000 for item in (*counter,*uncertainty)):
+            bad('counterevidence/uncertainty entries must be at most 1000 characters',400)
+        try:
+            with store.tx():
+                return core.review_a2cm_candidate(
+                    project_id=project_id,candidate_id=candidate_id,
+                    primary_session_id=nonempty(body.get('primarySessionId'),'primarySessionId',160),
+                    decision=oneof(body.get('decision'),('PROMOTE','REJECT','DEFER'),'decision'),
+                    policy_version=nonempty(body.get('policyVersion'),'policyVersion',160),
+                    counterevidence=counter,uncertainty=uncertainty,
+                    rationale=nonempty(body.get('rationale'),'rationale',4000),
+                    actor_id=principal.id,
+                )
+        except KeyError as exc:
+            bad(str(exc),404)
+        except PermissionError as exc:
+            bad(str(exc),403)
+        except ValueError as exc:
+            bad(str(exc),409)
+
+    @api.get('/api/v1/projects/{project_id}/infra/frontier')
+    def infra_frontier(project_id:str,_:Any=Depends(logged_in)):
+        project(store,project_id)
+        return core.frontier_snapshot(project_id)
+
+    @api.post('/api/v1/projects/{project_id}/infra/frontier/consult',status_code=201)
+    def infra_frontier_consult(project_id:str,body:dict,principal:Any=Depends(logged_in)):
+        project(store,project_id,True)
+        if not principal.allows('tasks.execute',project_id):
+            bad('Missing permission: tasks.execute',403)
+        try:
+            return core.frontier_consult(
+                project_id=project_id,
+                parent_task_id=nonempty(body.get('parentTaskId'),'parentTaskId',160),
+                owner_session_id=nonempty(body.get('ownerSessionId'),'ownerSessionId',160),
+                capability=nonempty(body.get('capability'),'capability',500),
+                budget=body.get('budget'),
+                actor_id=principal.id,
+                operation_id=nonempty(body.get('operationId'),'operationId',128),
+            )
+        except FrontierAdvisorUnavailable as exc:
+            bad(str(exc),503)
+        except ValueError as exc:
+            bad(str(exc),400)
+        except RuntimeError as exc:
+            bad(str(exc),409)
+
+    @api.post('/api/v1/projects/{project_id}/infra/frontier/delegate',status_code=202)
+    def infra_frontier_delegate(project_id:str,body:dict,principal:Any=Depends(logged_in)):
+        project(store,project_id,True)
+        if not principal.allows('tasks.execute',project_id):
+            bad('Missing permission: tasks.execute',403)
+        commands=body.get('acceptanceCommands')
+        if not isinstance(commands,list):
+            bad('acceptanceCommands must be a list',400)
+        try:
+            return core.frontier_delegate(
+                project_id=project_id,
+                parent_task_id=nonempty(body.get('parentTaskId'),'parentTaskId',160),
+                owner_session_id=nonempty(body.get('ownerSessionId'),'ownerSessionId',160),
+                capability=nonempty(body.get('capability'),'capability',500),
+                objective=nonempty(body.get('objective'),'objective',8000),
+                acceptance_commands=commands,
+                budget=body.get('budget'),
+                actor_id=principal.id,
+                operation_id=nonempty(body.get('operationId'),'operationId',128),
+                confirmation=str(body.get('confirmation') or ''),
+            )
+        except PermissionError as exc:
+            bad(str(exc),403)
+        except ValueError as exc:
+            bad(str(exc),400)
+        except RuntimeError as exc:
+            if 'not available' in str(exc):
+                bad(str(exc),503)
+            bad(str(exc),409)
+
+    @api.post('/api/v1/projects/{project_id}/infra/frontier/delegations/{request_id}/cancel')
+    def infra_frontier_cancel(project_id:str,request_id:str,body:dict,principal:Any=Depends(logged_in)):
+        project(store,project_id,True)
+        if not principal.allows('tasks.execute',project_id):
+            bad('Missing permission: tasks.execute',403)
+        try:
+            return core.frontier_cancel_delegate(
+                project_id=project_id,request_id=request_id,actor_id=principal.id,
+                rationale=nonempty(body.get('rationale'),'rationale',4000),
+            )
+        except KeyError as exc:
+            bad(str(exc),404)
+        except ValueError as exc:
+            bad(str(exc),409)
+        except RuntimeError as exc:
+            bad(str(exc),503)
+
+    @api.post('/api/v1/projects/{project_id}/infra/frontier/delegations/{request_id}/review')
+    def infra_frontier_review(project_id:str,request_id:str,body:dict,principal:Any=Depends(logged_in)):
+        project(store,project_id,True)
+        if not principal.allows('tasks.execute',project_id):
+            bad('Missing permission: tasks.execute',403)
+        try:
+            return core.frontier_review_delegate(
+                project_id=project_id,request_id=request_id,
+                owner_session_id=nonempty(body.get('ownerSessionId'),'ownerSessionId',160),
+                decision=nonempty(body.get('decision'),'decision',20),
+                actor_id=principal.id,
+                rationale=nonempty(body.get('rationale'),'rationale',4000),
+            )
+        except KeyError as exc:
+            bad(str(exc),404)
+        except PermissionError as exc:
+            bad(str(exc),403)
+        except ValueError as exc:
+            bad(str(exc),409)
+        except RuntimeError as exc:
+            bad(str(exc),503)
 
     @api.get('/api/v1/projects/{project_id}/infra/provenance')
     def infra_provenance(project_id:str,_:Any=Depends(logged_in)):
@@ -319,6 +517,97 @@ def register(api,store,runtime):
         return {'aggregates':aggregates,'outbox':outbox,'inboxCount':inbox_count,
                 'leases':leases,'sagas':sagas}
 
+    @api.get('/api/v1/infra/backups')
+    def infra_backups(_:Any=Depends(logged_in)):
+        rows=store.execute(
+            "SELECT id,kind,status,backup_id,file_count,checksum_status,error,created_at,completed_at "
+            "FROM backup_runs ORDER BY created_at DESC LIMIT 100"
+        ).fetchall()
+        return page([{**dict(row),'storage_ref':row['backup_id']} for row in rows])
+
+    @api.post('/api/v1/infra/backups',status_code=201)
+    def infra_create_backup(_:Any=Depends(logged_in)):
+        backup_root=Path(api.state.backup_dir)
+        backup_root.mkdir(parents=True,exist_ok=True)
+        backup_id=ident('backup')
+        run_id=ident('backuprun')
+        destination=backup_root/backup_id
+        created=datetime.now(timezone.utc).isoformat()
+        store.execute(
+            "INSERT INTO backup_runs(id,kind,status,backup_id,destination,created_at) VALUES(?,?,?,?,?,?)",
+            (run_id,'BACKUP','RUNNING',backup_id,str(destination),created)
+        )
+        try:
+            artifact_root=Path(api.state.artifact_dir)
+            artifact_dirs={'artifacts':artifact_root} if artifact_root.is_dir() else {}
+            create_backup(
+                destination,
+                databases={'mrlc':Path(core.database_path)},
+                artifact_dirs=artifact_dirs,
+            )
+            manifest=destination/'manifest.json'
+            payload=json.loads(manifest.read_text())
+            file_count=len(payload.get('files',[]))
+            completed=datetime.now(timezone.utc).isoformat()
+            store.execute(
+                "UPDATE backup_runs SET status='COMPLETED',manifest_path=?,file_count=?,"
+                "checksum_status='VERIFIED',completed_at=? WHERE id=?",
+                (str(manifest),file_count,completed,run_id)
+            )
+            store.audit('backup',f'Backup {backup_id} created and checksummed',level='info')
+            store.emit('infra.backup.completed',None,{'backupId':backup_id,'runId':run_id})
+            return {'id':run_id,'backupId':backup_id,'status':'COMPLETED','fileCount':file_count,
+                    'checksumStatus':'VERIFIED','createdAt':created,'completedAt':completed}
+        except Exception as exc:
+            completed=datetime.now(timezone.utc).isoformat()
+            store.execute(
+                "UPDATE backup_runs SET status='FAILED',error=?,completed_at=? WHERE id=?",
+                (str(exc)[:3000],completed,run_id)
+            )
+            store.audit('backup',f'Backup {backup_id} failed: {exc}',level='error')
+            bad(f'Backup failed: {exc}',500)
+
+    @api.post('/api/v1/infra/backups/{backup_id}/verify')
+    def infra_verify_backup(backup_id:str,_:Any=Depends(logged_in)):
+        source=store.execute(
+            "SELECT * FROM backup_runs WHERE backup_id=? AND kind='BACKUP' AND status='COMPLETED' "
+            "ORDER BY created_at DESC LIMIT 1",(backup_id,)
+        ).fetchone()
+        if source is None:
+            bad('Backup not found',404)
+        backup_root=Path(api.state.backup_dir)
+        drill_id=ident('verify')
+        run_id=ident('backuprun')
+        destination=backup_root/'verify-drills'/drill_id
+        created=datetime.now(timezone.utc).isoformat()
+        store.execute(
+            "INSERT INTO backup_runs(id,kind,status,backup_id,destination,created_at) VALUES(?,?,?,?,?,?)",
+            (run_id,'VERIFY','RUNNING',backup_id,str(destination),created)
+        )
+        try:
+            result=restore_backup(Path(source['destination']),destination)
+            completed=datetime.now(timezone.utc).isoformat()
+            store.execute(
+                "UPDATE backup_runs SET status='COMPLETED',manifest_path=?,file_count=?,"
+                "checksum_status='VERIFIED',completed_at=? WHERE id=?",
+                (str(result.manifest_path),result.files,completed,run_id)
+            )
+            shutil.rmtree(destination,ignore_errors=True)
+            store.audit('backup',f'Backup {backup_id} restore drill verified',level='info')
+            store.emit('infra.backup.verified',None,{'backupId':backup_id,'runId':run_id})
+            return {'id':run_id,'backupId':backup_id,'status':'COMPLETED',
+                    'fileCount':result.files,'checksumStatus':'VERIFIED',
+                    'createdAt':created,'completedAt':completed}
+        except Exception as exc:
+            completed=datetime.now(timezone.utc).isoformat()
+            shutil.rmtree(destination,ignore_errors=True)
+            store.execute(
+                "UPDATE backup_runs SET status='FAILED',error=?,completed_at=? WHERE id=?",
+                (str(exc)[:3000],completed,run_id)
+            )
+            store.audit('backup',f'Backup {backup_id} restore drill failed: {exc}',level='error')
+            bad(f'Backup verification failed: {exc}',500)
+
     @api.get('/api/v1/projects/{project_id}/infra/operations')
     def infra_operations(project_id:str,_:Any=Depends(logged_in)):
         project(store,project_id)
@@ -344,6 +633,14 @@ def register(api,store,runtime):
             'toolId':entry.tool_id,'roleId':entry.role_id,'result':entry.result,
             'recordedAt':entry.recorded_at.isoformat(),
         } for entry in core.mcp.access_log(project_id)[-100:]]
+        latest_backup=store.execute(
+            "SELECT id,kind,status,backup_id,file_count,checksum_status,error,created_at,completed_at "
+            "FROM backup_runs WHERE kind='BACKUP' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        latest_verify=store.execute(
+            "SELECT id,kind,status,backup_id,file_count,checksum_status,error,created_at,completed_at "
+            "FROM backup_runs WHERE kind='VERIFY' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
         return {
             'continuity':None if checkpoint is None else {
                 'checkpointId':checkpoint.checkpoint_id,'sessionId':checkpoint.session_id,
@@ -355,6 +652,10 @@ def register(api,store,runtime):
             },
             'mcp':{'tools':tools,'accessAudit':mcp_audit},
             'skills':skills,'workers':workers,
-            'backup':{'tracked':False,'reason':'Backup/restore is implemented but has no persistent execution registry yet.'},
+            'backup':{
+                'tracked':True,
+                'latestBackup':None if latest_backup is None else {**dict(latest_backup),'storage_ref':latest_backup['backup_id']},
+                'latestVerify':None if latest_verify is None else {**dict(latest_verify),'storage_ref':latest_verify['backup_id']},
+            },
         }
 

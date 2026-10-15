@@ -1,4 +1,4 @@
-import type { Channel, Message, Task, NewTask, AcceptanceCriterion, AuditLog, Page } from '../domain/models';
+import type { Channel, Message, ChannelResponseDispatch, ChannelResponseGroup, Task, NewTask, AcceptanceCriterion, AuditLog, Page } from '../domain/models';
 import { localOrganizationRepository, type OrganizationRepository } from './organizationRepository';
 
 /** Local demo adapter. Data is namespaced by project, persistent and observable. */
@@ -6,6 +6,7 @@ export interface WorkspaceRepository {
   listChannels(projectId: string): Promise<Page<Channel>>;
   createChannel(projectId: string, input: Pick<Channel, 'name' | 'purpose' | 'contextPolicy'>): Promise<Channel>;
   listMessages(channelId: string): Promise<Page<Message>>;
+  listResponseGroups(channelId:string):Promise<Page<ChannelResponseGroup>>;
   sendMessage(channelId: string, content: string, responseMode: 'single' | 'multi', artifactIds?: string[]): Promise<Message>;
   listTasks(projectId: string): Promise<Page<Task>>;
   createTask(input: NewTask): Promise<Task>;
@@ -13,7 +14,7 @@ export interface WorkspaceRepository {
   verifyCriterion(taskId:string,criterionId:string,artifactIds:string[]):Promise<Task>;
   acceptTask(taskId:string,reason:string):Promise<Task>;
   dispatchTask(taskId:string):Promise<{jobId:string;status:string}>;
-  respondToChannel(channelId:string,agentId:string,artifactIds?:string[]):Promise<{jobId:string;status:string}>;
+  respondToChannel(channelId:string,agentId?:string,artifactIds?:string[],taskId?:string):Promise<ChannelResponseDispatch>;
   activity(taskId: string): Promise<Page<AuditLog>>;
   subscribe(listener: () => void): () => void;
 }
@@ -87,6 +88,7 @@ export class LocalWorkspaceRepository implements WorkspaceRepository {
     const channel: Channel = { id:newId(), projectId:id, ...input }; this.db.channels.push(channel); this.changed(); return channel;
   };
   listMessages = async (id: string) => ({ items: this.db.messages.filter(m=>m.channelId===id) });
+  listResponseGroups = async (_id:string):Promise<Page<ChannelResponseGroup>> => ({items:[]});
   sendMessage = async (channelId: string, content: string, _responseMode: 'single'|'multi', artifactIds: string[] = []) => {
     const channel=this.db.channels.find(c=>c.id===channelId);
     if(!channel) throw new Error('Channel does not exist');
@@ -100,7 +102,7 @@ export class LocalWorkspaceRepository implements WorkspaceRepository {
         if(artifact.projectId!==channel.projectId)throw new Error('Artifact belongs to another project');
       }
     }
-    const item: Message = {id:newId(),channelId,senderName:'You',content,createdAt:new Date().toISOString(),artifactIds:[...new Set(artifactIds)]};
+    const item: Message = {id:newId(),channelId,senderName:'You',content,createdAt:new Date().toISOString(),artifactIds:[...new Set(artifactIds)],responseMode:_responseMode};
     this.db.messages.push(item);this.changed();return item;
   };
   listTasks = async (id: string) => ({ items:this.db.tasks.filter(t=>t.projectId===id) });
@@ -120,7 +122,7 @@ export class LocalWorkspaceRepository implements WorkspaceRepository {
   verifyCriterion = async (_taskId:string,_criterionId:string,_artifactIds:string[]):Promise<Task> => {throw new Error('Backend-only evidence verification');};
   acceptTask = async (_taskId:string,_reason:string):Promise<Task> => {throw new Error('Backend-only task acceptance');};
   dispatchTask = async (_taskId:string):Promise<{jobId:string;status:string}> => {throw new Error('Mock repository cannot run a real model');};
-  respondToChannel = async (_channelId:string,_agentId:string,_artifactIds:string[]=[]):Promise<{jobId:string;status:string}> => {throw new Error('Mock repository cannot invoke a real agent');};
+  respondToChannel = async (_channelId:string,_agentId?:string,_artifactIds:string[]=[],_taskId?:string):Promise<ChannelResponseDispatch> => {throw new Error('Mock repository cannot invoke a real agent');};
   activity = async (id: string) => ({items:this.db.logs.filter(x=>x.taskId===id)});
 }
 export const localWorkspaceRepository = new LocalWorkspaceRepository();
