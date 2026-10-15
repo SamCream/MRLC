@@ -18,6 +18,7 @@ from infra.memory import MemoryItem, EvidenceItem
 from infra.project_bank import Issue, Decision, Lesson, Progress
 from infra.evidence_graph import evidence_chains
 from infra.persistence.backup import create_backup, restore_backup, BackupError
+from infra.frontier import FrontierAdvisorUnavailable
 
 
 def register(api,store,runtime):
@@ -295,6 +296,33 @@ def register(api,store,runtime):
         for row in store.execute("SELECT * FROM bank_progress WHERE project_id=? ORDER BY rowid DESC",(project_id,)).fetchall():
             value=dict(row);value['artifact_refs']=list(filter(None,str(value.get('artifact_refs') or '').split('\n')));progress.append(value)
         return {'issues':issues,'decisions':decisions,'lessons':lessons,'progress':progress}
+
+    @api.get('/api/v1/projects/{project_id}/infra/frontier')
+    def infra_frontier(project_id:str,_:Any=Depends(logged_in)):
+        project(store,project_id)
+        return core.frontier_snapshot(project_id)
+
+    @api.post('/api/v1/projects/{project_id}/infra/frontier/consult',status_code=201)
+    def infra_frontier_consult(project_id:str,body:dict,principal:Any=Depends(logged_in)):
+        project(store,project_id,True)
+        if not principal.allows('tasks.execute',project_id):
+            bad('Missing permission: tasks.execute',403)
+        try:
+            return core.frontier_consult(
+                project_id=project_id,
+                parent_task_id=nonempty(body.get('parentTaskId'),'parentTaskId',160),
+                owner_session_id=nonempty(body.get('ownerSessionId'),'ownerSessionId',160),
+                capability=nonempty(body.get('capability'),'capability',500),
+                budget=body.get('budget'),
+                actor_id=principal.id,
+                operation_id=nonempty(body.get('operationId'),'operationId',128),
+            )
+        except FrontierAdvisorUnavailable as exc:
+            bad(str(exc),503)
+        except ValueError as exc:
+            bad(str(exc),400)
+        except RuntimeError as exc:
+            bad(str(exc),409)
 
     @api.get('/api/v1/projects/{project_id}/infra/provenance')
     def infra_provenance(project_id:str,_:Any=Depends(logged_in)):
