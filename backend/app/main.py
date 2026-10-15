@@ -61,6 +61,7 @@ def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:st
                     ('Server restarted while provider call was in flight; no replay-safe checkpoint exists',now(),j['id']))
                 t=store.obj('task',j['target_id']) if j['kind']=='task' else None
                 if t and t['status']=='running':t['status']='failed';store.change('runtime','task',t,t['projectId'],t['id'])
+            application.state.infra.reconcile_runtime_after_restart()
         worker=asyncio.create_task(job_worker(application))
         try:yield
         finally:
@@ -209,6 +210,7 @@ async def job_worker(application:FastAPI):
                         obj=s.obj('task',row['target_id'])
                         if obj and obj['status']=='running':
                             obj['status']='failed';s.change('worker','task',obj,row['project_id'],obj['id'])
+                    application.state.infra.finish_job(dict(row),'FAILED')
 
 
 async def run_job(application:FastAPI,job:dict):
