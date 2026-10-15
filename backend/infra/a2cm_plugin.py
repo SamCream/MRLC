@@ -83,6 +83,43 @@ class A2CMPlugin:
         self._persist(candidate)
         return candidate
 
+    @staticmethod
+    def observe_in_connection(
+        connection: sqlite3.Connection,
+        observation: Observation,
+        source: str,
+        *,
+        project_id: str,
+    ) -> BeliefCandidate:
+        """Persist an evidence-backed candidate inside the caller's transaction."""
+        import json
+
+        if source not in {"fast_tool", "primary", "frontier"}:
+            raise ValueError(f"unsupported observation source: {source}")
+        if not project_id.strip():
+            raise ValueError("belief candidate requires project scope")
+        candidate=BeliefCandidate(
+            candidate_id=f"cand_{observation.observation_id}",
+            actor_id=observation.actor_id,
+            statement=observation.content,
+            evidence_refs=(observation.evidence_ref,),
+            confidence=observation.confidence,
+            project_id=project_id,
+        )
+        connection.execute(
+            """
+            INSERT INTO a2cm_candidates(
+                candidate_id,actor_id,statement,evidence_refs_json,confidence,status,
+                reviewer,policy_version,counterevidence_json,uncertainty_json,project_id
+            ) VALUES(?,?,?,?,?,'CANDIDATE',NULL,NULL,'[]','[]',?)
+            """,
+            (
+                candidate.candidate_id,candidate.actor_id,candidate.statement,
+                json.dumps(candidate.evidence_refs),candidate.confidence,project_id,
+            ),
+        )
+        return candidate
+
     def promote(
         self,
         candidate_id: str,
