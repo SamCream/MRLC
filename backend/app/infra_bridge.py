@@ -399,7 +399,7 @@ class InfraBridge:
                 source_ref=f"memory:{item.memory_id}",
                 project_id=item.project_id,
                 content=item.content,
-                token_count=max(1,len(item.content.split())),
+                token_count=max(1,len(item.content.split()),(len(item.content)+3)//4),
                 priority=priority,
                 occurred_at=item.valid_from,
                 role_scopes=(item.role_scope,),
