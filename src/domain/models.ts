@@ -17,6 +17,12 @@ export interface ChannelResponseDispatch {
   jobId:ID;jobIds:ID[];groupId:ID;status:string;responseMode:'single'|'multi';
   agents:Array<{agentId:ID;roleId:ID;roleName:string;routeReason:string;order:number}>;
 }
+export interface ChannelResponseGroup {
+  groupId:ID;projectId:ID;channelId:ID;userMessageId:ID;responseMode:'single'|'multi';
+  status:string;createdAt:ISODateTime;completedAt:ISODateTime|null;
+  members:Array<{order:number;agentId:ID;agentName:string;roleId:ID|null;roleName:string|null;
+    jobId:ID;routeReason:string;status:string}>;
+}
 export interface Artifact { id: ID; projectId: ID; taskId?: ID; name: string; mimeType: string; version: string; status: EvidenceStatus; sizeBytes?: number; checksum?: string; downloadUrl?: string; createdAt: ISODateTime; contentAvailable?: boolean; demoMetadata?: boolean; }
 export interface ArtifactVersion { id: ID; artifactId: ID; version: string; sizeBytes?: number; checksum?: string; createdAt: ISODateTime; contentAvailable: boolean; }
 export interface EvidenceLink { id: ID; artifactId: ID; kind: 'source' | 'run' | 'task' | 'decision'; referenceId: ID; description: string; createdAt: ISODateTime; }
