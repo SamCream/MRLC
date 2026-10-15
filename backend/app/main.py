@@ -188,8 +188,12 @@ def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:st
                 'agentCheckpointSupported':False,'physicalGpuControlSupported':False,
                 'taskDispatchSupported':runtime.available,'simulatedMetrics':False,
                 'infraCoreMigrated':True,'domainEventReplay':True,'consistencyPrimitives':True,
-                'memoryBankAvailable':True,'projectionCompatibility':True,
-                'authorizationMode':'rbac','version':'0.9.0-infra'}
+                'memoryBankAvailable':True,'runtimeMemoryContext':True,
+                'serialMultiRoleResponses':True,'knowledgeReadiness':True,
+                'a2cmCandidateReview':True,'managedBackupVerification':True,
+                'frontierConsultAvailable':infra.frontier_advisor is not None,
+                'frontierDelegateAvailable':bool(infra.frontier.policy.allow_delegation and infra.delegate_runner is not None),
+                'projectionCompatibility':True,'authorizationMode':'rbac','version':'0.9.1-infra'}
 
     from . import routes_auth,routes_organization,routes_workspace,routes_artifacts,routes_approvals,routes_runtime,routes_system,routes_coordination,routes_infra
     for routes in (routes_auth,routes_organization,routes_workspace,routes_artifacts,routes_approvals,routes_runtime,routes_system,routes_coordination,routes_infra):
