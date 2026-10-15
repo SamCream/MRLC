@@ -168,3 +168,65 @@ def test_scheduler_enqueue_is_idempotent_for_same_job(tmp_path):
         assert len(queued)==1
     finally:
         app.state.store.close()
+
+
+def test_workspace_artifact_and_approval_promote_into_infra_truth(tmp_path):
+    app=create_app(db_path=str(tmp_path/"semantic.sqlite3"),artifact_dir=str(tmp_path/"files"),
+                   password=PASSWORD,secret="s"*40,admin_token="a"*32)
+    with TestClient(app) as client:
+        _login(client)
+        pid=_project(client,"Semantic")
+
+        channel=client.post(f"/api/v1/projects/{pid}/channels",json={
+            "name":"general","purpose":"history","contextPolicy":"relevant"
+        })
+        assert channel.status_code==201,channel.text
+        message=client.post(f"/api/v1/channels/{channel.json()['id']}/messages",json={
+            "content":"preserve this message","responseMode":"single"
+        })
+        assert message.status_code==201,message.text
+        history=app.state.store.execute(
+            "SELECT actor,content FROM history WHERE project_id=? AND session_id=?",
+            (pid,"channel:"+channel.json()["id"])
+        ).fetchall()
+        assert [(row["actor"],row["content"]) for row in history]==[("You","preserve this message")]
+
+        artifact=client.post(
+            f"/api/v1/projects/{pid}/artifacts",
+            files={"file":("proof.txt",b"verified bytes","text/plain")},
+        )
+        assert artifact.status_code==201,artifact.text
+        art=artifact.json()
+        replay=client.get(f"/api/v1/projects/{pid}/infra/replay").json()
+        assert replay["artifacts"][art["id"]]==art["checksum"]
+
+        role=client.post("/api/v1/roles",json={
+            "name":"Reviewer","purpose":"request approval","lifecycle":"active",
+            "capabilities":[],"allowedPermissions":[]
+        })
+        assert role.status_code==201,role.text
+        agent=client.post(f"/api/v1/projects/{pid}/agents",json={
+            "roleTemplateId":role.json()["id"],"name":"Reviewer"
+        })
+        assert agent.status_code==201,agent.text
+        approval=client.post("/api/v1/approvals",json={
+            "projectId":pid,"requestedByAgentId":agent.json()["id"],
+            "title":"Adopt backend migration","type":"decision","risk":"low",
+            "evidenceArtifactIds":[art["id"]]
+        })
+        assert approval.status_code==201,approval.text
+        decided=client.post(f"/api/v1/approvals/{approval.json()['id']}/decisions",json={
+            "decision":"approve","reason":"migration evidence verified","expectedRevision":1
+        })
+        assert decided.status_code==200,decided.text
+        bank=app.state.store.execute(
+            "SELECT title,rationale,status FROM bank_decisions WHERE project_id=?",(pid,)
+        ).fetchall()
+        assert len(bank)==1
+        assert bank[0]["title"]=="Adopt backend migration"
+        assert bank[0]["rationale"]=="migration evidence verified"
+        assert bank[0]["status"]=="active"
+        domain=[event.event_type for event in app.state.infra.events.read(pid)]
+        assert "MESSAGE_RECORDED" in domain
+        assert "ARTIFACT_RECORDED" in domain
+        assert "DECISION_RECORDED" in domain
