@@ -1,4 +1,4 @@
-import type { Channel, Message, ChannelResponseDispatch, Task, NewTask, AcceptanceCriterion, AuditLog, Page } from '../domain/models';
+import type { Channel, Message, ChannelResponseDispatch, ChannelResponseGroup, Task, NewTask, AcceptanceCriterion, AuditLog, Page } from '../domain/models';
 import { localOrganizationRepository, type OrganizationRepository } from './organizationRepository';
 
 /** Local demo adapter. Data is namespaced by project, persistent and observable. */
@@ -6,6 +6,7 @@ export interface WorkspaceRepository {
   listChannels(projectId: string): Promise<Page<Channel>>;
   createChannel(projectId: string, input: Pick<Channel, 'name' | 'purpose' | 'contextPolicy'>): Promise<Channel>;
   listMessages(channelId: string): Promise<Page<Message>>;
+  listResponseGroups(channelId:string):Promise<Page<ChannelResponseGroup>>;
   sendMessage(channelId: string, content: string, responseMode: 'single' | 'multi', artifactIds?: string[]): Promise<Message>;
   listTasks(projectId: string): Promise<Page<Task>>;
   createTask(input: NewTask): Promise<Task>;
@@ -87,6 +88,7 @@ export class LocalWorkspaceRepository implements WorkspaceRepository {
     const channel: Channel = { id:newId(), projectId:id, ...input }; this.db.channels.push(channel); this.changed(); return channel;
   };
   listMessages = async (id: string) => ({ items: this.db.messages.filter(m=>m.channelId===id) });
+  listResponseGroups = async (_id:string):Promise<Page<ChannelResponseGroup>> => ({items:[]});
   sendMessage = async (channelId: string, content: string, _responseMode: 'single'|'multi', artifactIds: string[] = []) => {
     const channel=this.db.channels.find(c=>c.id===channelId);
     if(!channel) throw new Error('Channel does not exist');
