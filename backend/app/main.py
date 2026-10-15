@@ -177,9 +177,8 @@ async def job_worker(application:FastAPI):
       while True:
         if executor.available and len(running)<max_concurrent:
             with s.tx():
-                row=s.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY priority DESC, created_at LIMIT 1").fetchone()
-                if row:
-                    data=dict(row)
+                data=application.state.infra.claim_next_job()
+                if data:
                     lease=(datetime.now(timezone.utc)+timedelta(minutes=10)).isoformat().replace('+00:00','Z')
                     s.execute("UPDATE jobs SET status='running',started_at=?,lease_expires_at=? WHERE id=?",(now(),lease,data['id']))
                     agent=s.obj('agent',data['agent_id'])
@@ -259,6 +258,7 @@ async def run_job(application:FastAPI,job:dict):
             usage={'id':ident('usage'),'projectId':job['project_id'],'jobId':job['id'],'agentId':job['agent_id'],'modelId':result.get('model',getattr(provider,'model',None)),
                    'inputTokens':result.get('inputTokens'),'outputTokens':result.get('outputTokens'),'costUsd':result.get('costUsd'),'usageReported':bool(result.get('usageReported')),'createdAt':now()}
             s.put('usageRecord',usage,job['project_id'])
+            application.state.infra.record_provider_result(job,result)
             if job['kind']=='task':
                 content=completion.encode('utf-8')
                 digest=hashlib.sha256(content).hexdigest()
@@ -312,6 +312,8 @@ async def run_job(application:FastAPI,job:dict):
             if slot:
                 slot.update(state='free',agentId=None,taskId=None,modelId=None)
                 s.change('worker','slot',slot,job['project_id'])
+            terminal=s.execute('SELECT status FROM jobs WHERE id=?',(job['id'],)).fetchone()
+            application.state.infra.finish_job(job,(terminal['status'] if terminal else 'unknown').upper())
 
 
 # When launched by uvicorn, environment variables must be present before import.
