@@ -156,7 +156,7 @@ class InfraBridge:
                 self._sync_dependencies(item)
             for agent in self.store.all("agent"):
                 self._sync_agent("migration", agent)
-            for row in self.store.conn.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at").fetchall():
+            for row in self.store.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at").fetchall():
                 agent=self.store.obj("agent",row["agent_id"]) if row["agent_id"] else None
                 if agent:
                     self.enqueue_job(agent,row["project_id"],int(row["priority"]),job_id=row["id"])
@@ -210,7 +210,7 @@ class InfraBridge:
 
     def _sync_project(self, source: str, item: dict) -> None:
         pid=item["id"]
-        row=self.store.conn.execute("SELECT project_id,name FROM projects WHERE project_id=?",(pid,)).fetchone()
+        row=self.store.execute("SELECT project_id,name FROM projects WHERE project_id=?",(pid,)).fetchone()
         if row is None:
             self.projects.create_in_connection(self.store.conn, Project(pid,item["name"]))
             self._append(pid,"PROJECT_CREATED",{"project_id":pid,"name":item["name"]},
@@ -227,7 +227,7 @@ class InfraBridge:
         pid=item["projectId"]; tid=item["id"]
         self._ensure_project_id(pid)
         desired=_TASK_STATE.get(str(item.get("status","todo")).lower(),"CREATED")
-        row=self.store.conn.execute(
+        row=self.store.execute(
             "SELECT task_id,project_id,title,state,block_reason FROM tasks WHERE task_id=?",(tid,)
         ).fetchone()
         if row is None:
@@ -274,11 +274,11 @@ class InfraBridge:
         tid=item["id"]
         self.store.conn.execute("DELETE FROM task_dependencies WHERE task_id=?",(tid,))
         for dep in item.get("dependencyIds",[]):
-            if self.store.conn.execute("SELECT 1 FROM tasks WHERE task_id=?",(dep,)).fetchone() is None:
+            if self.store.execute("SELECT 1 FROM tasks WHERE task_id=?",(dep,)).fetchone() is None:
                 projected=self.store.obj("task",dep)
                 if projected:
                     self._sync_task("migration",projected,dependencies=False)
-            if self.store.conn.execute("SELECT 1 FROM tasks WHERE task_id=?",(dep,)).fetchone():
+            if self.store.execute("SELECT 1 FROM tasks WHERE task_id=?",(dep,)).fetchone():
                 self.tasks.add_dependency_in_connection(self.store.conn,tid,dep)
                 self._append(item["projectId"],"TASK_DEPENDENCY_ADDED",
                              {"task_id":tid,"dependency_task_id":dep},
@@ -290,7 +290,7 @@ class InfraBridge:
             return
         pid=item["projectId"]
         self._ensure_project_id(pid)
-        row=self.store.conn.execute("SELECT session_id FROM sessions WHERE session_id=?",(sid,)).fetchone()
+        row=self.store.execute("SELECT session_id FROM sessions WHERE session_id=?",(sid,)).fetchone()
         lifecycle="PARKED" if item.get("status") in {"parked","paused"} else "ACTIVE"
         if row is None:
             session=Session(sid,pid,item.get("id") or "mrlc-web",item.get("roleTemplateId") or "unknown",
@@ -308,7 +308,7 @@ class InfraBridge:
                          actor_id=source,idempotency_key=self._key(f"compat:session:{sid}:updated",item))
 
     def _ensure_project_id(self, project_id: str) -> None:
-        if self.store.conn.execute("SELECT 1 FROM projects WHERE project_id=?",(project_id,)).fetchone():
+        if self.store.execute("SELECT 1 FROM projects WHERE project_id=?",(project_id,)).fetchone():
             return
         projected=self.store.obj("project",project_id)
         if projected is None:
@@ -329,7 +329,7 @@ class InfraBridge:
             if meta.slot_state in {"ACTIVE","DRAINING"}:
                 scheduler.finish(sid,task_state="FAILED")
         scheduler.save_in_connection(self.store.conn)
-        for row in self.store.conn.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at").fetchall():
+        for row in self.store.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at").fetchall():
             agent=self.store.obj("agent",row["agent_id"]) if row["agent_id"] else None
             if agent:
                 self.enqueue_job(agent,row["project_id"],int(row["priority"]),job_id=row["id"])
@@ -367,7 +367,7 @@ class InfraBridge:
             scheduler.finish(selected.session_id,task_state="FAILED")
             scheduler.save_in_connection(self.store.conn)
             return None
-        row=self.store.conn.execute(
+        row=self.store.execute(
             "SELECT * FROM jobs WHERE agent_id=? AND status='queued' ORDER BY priority DESC,created_at LIMIT 1",
             (agent["id"],)
         ).fetchone()
@@ -514,13 +514,13 @@ class InfraBridge:
     ) -> MemoryItem:
         """Store evidence-backed Memory and its event atomically on the shared DB."""
         for event_id in item.source_event_refs:
-            if self.store.conn.execute(
+            if self.store.execute(
                 "SELECT 1 FROM events WHERE project_id=? AND event_id=?",
                 (item.project_id,event_id),
             ).fetchone() is None:
                 raise ValueError(f"unknown source event for project: {event_id}")
         for entry in evidence:
-            if self.store.conn.execute(
+            if self.store.execute(
                 "SELECT 1 FROM events WHERE project_id=? AND event_id=?",
                 (item.project_id,entry.event_id),
             ).fetchone() is None:
@@ -630,21 +630,21 @@ class InfraBridge:
                 "advice":row["advice"],"returnContract":row["return_contract"],
                 "reviewState":row["review_state"],"budgetUsed":int(row["budget_used"]),
             }
-            for row in self.store.conn.execute(
+            for row in self.store.execute(
                 "SELECT * FROM frontier_requests WHERE project_id=? ORDER BY rowid DESC LIMIT 100",
                 (project_id,),
             ).fetchall()
         ]
         sessions=[
             {"sessionId":row["session_id"],"roleId":row["role_id"],"lifecycle":row["lifecycle"]}
-            for row in self.store.conn.execute(
+            for row in self.store.execute(
                 "SELECT session_id,role_id,lifecycle FROM sessions "
                 "WHERE project_id=? ORDER BY rowid",(project_id,)
             ).fetchall()
         ]
         tasks=[
             {"taskId":row["task_id"],"state":row["state"]}
-            for row in self.store.conn.execute(
+            for row in self.store.execute(
                 "SELECT task_id,state FROM tasks WHERE project_id=? ORDER BY rowid",(project_id,)
             ).fetchall()
         ]
@@ -680,7 +680,7 @@ class InfraBridge:
                     "branch":row["branch"],"commitSha":row["commit_sha"],"mergeSha":row["merge_sha"],
                     "error":row["error"],"createdAt":float(row["created_at"]),
                 }
-                for row in self.store.conn.execute(
+                for row in self.store.execute(
                     "SELECT * FROM frontier_delegate_runs WHERE project_id=? "
                     "ORDER BY created_at DESC LIMIT 100",(project_id,)
                 ).fetchall()
@@ -716,12 +716,12 @@ class InfraBridge:
         if not operation_id.strip() or len(operation_id)>128:
             raise ValueError("operationId must contain 1-128 characters")
 
-        task=self.store.conn.execute(
+        task=self.store.execute(
             "SELECT project_id FROM tasks WHERE task_id=?",(parent_task_id,)
         ).fetchone()
         if task is None or task["project_id"]!=project_id:
             raise ValueError("parent task must belong to this project")
-        session=self.store.conn.execute(
+        session=self.store.execute(
             "SELECT project_id,lifecycle FROM sessions WHERE session_id=?",(owner_session_id,)
         ).fetchone()
         if session is None or session["project_id"]!=project_id:
@@ -729,7 +729,7 @@ class InfraBridge:
         if session["lifecycle"]!="ACTIVE":
             raise ValueError("owner session must be ACTIVE")
 
-        existing=self.store.conn.execute(
+        existing=self.store.execute(
             "SELECT status,request_id,error FROM frontier_delegate_operations "
             "WHERE actor_id=? AND operation_id=?",(actor_id,operation_id)
         ).fetchone()
@@ -991,12 +991,12 @@ class InfraBridge:
             raise ValueError(
                 f"budget must be an integer between 1 and {self.frontier.policy.budget}"
             )
-        task=self.store.conn.execute(
+        task=self.store.execute(
             "SELECT project_id FROM tasks WHERE task_id=?",(parent_task_id,)
         ).fetchone()
         if task is None or task["project_id"]!=project_id:
             raise ValueError("parent task must belong to this project")
-        session=self.store.conn.execute(
+        session=self.store.execute(
             "SELECT project_id,lifecycle FROM sessions WHERE session_id=?",(owner_session_id,)
         ).fetchone()
         if session is None or session["project_id"]!=project_id:
@@ -1004,13 +1004,13 @@ class InfraBridge:
         if session["lifecycle"]!="ACTIVE":
             raise ValueError("owner session must be ACTIVE")
 
-        existing=self.store.conn.execute(
+        existing=self.store.execute(
             "SELECT status,request_id,error FROM frontier_consult_operations "
             "WHERE actor_id=? AND operation_id=?",(actor_id,operation_id)
         ).fetchone()
         if existing is not None:
             if existing["status"]=="COMPLETED" and existing["request_id"]:
-                row=self.store.conn.execute(
+                row=self.store.execute(
                     "SELECT * FROM frontier_requests WHERE request_id=?",(existing["request_id"],)
                 ).fetchone()
                 if row is None:
@@ -1104,7 +1104,7 @@ class InfraBridge:
         This intentionally exposes arbitration metadata rather than duplicating the
         product Compute page's slot/resource presentation.
         """
-        row=self.store.conn.execute("SELECT state_json FROM scheduler_state WHERE id=1").fetchone()
+        row=self.store.execute("SELECT state_json FROM scheduler_state WHERE id=1").fetchone()
         state=json.loads(row["state_json"]) if row else {"capacity":self.scheduler.capacity,"sessions":{},"queue":[],"priority_adjustments":[]}
         sessions=[]
         scoped_ids=set()
