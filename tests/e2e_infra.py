@@ -74,6 +74,26 @@ def main() -> None:
         expect(page.locator(".infra-diff-section").filter(has_text="tasks")).to_be_visible(timeout=10_000)
         expect(page.locator(".infra-diff-section").filter(has_text=task["id"])).to_be_visible()
 
+        # A2CM is a real evidence-backed candidate workflow, not a static read model.
+        page.get_by_role("button",name="Memory & Context").click()
+        page.get_by_role("button",name="A2CM beliefs").click()
+        page.get_by_role("button",name="Enable A2CM Primary reviewer").click()
+        expect(page.get_by_text(re.compile("A2CM Primary session"))).to_be_visible(timeout=10_000)
+        page.get_by_label("Observation").fill("The project-created evidence supports the E2E hypothesis.")
+        page.get_by_role("button",name="Record candidate").click()
+        expect(page.get_by_text(re.compile("Created evidence-backed candidate"))).to_be_visible(timeout=10_000)
+        page.get_by_label("Decision").select_option("PROMOTE")
+        page.get_by_label("Rationale").fill("E2E promotion after evidence-backed Primary review.")
+        page.get_by_role("button",name="Commit Primary review").click()
+        expect(page.get_by_text(re.compile("→ PROMOTED"))).to_be_visible(timeout=10_000)
+
+        # Frontier surfaces are factual capability gates. CI has no CCR/worker binary,
+        # so neither paid CONSULT nor child DELEGATE may pretend to be available.
+        page.get_by_role("button",name="Provenance").click()
+        expect(page.get_by_text(re.compile("CCR_API_KEY is not configured"))).to_be_visible(timeout=10_000)
+        expect(page.get_by_text("MRLC_FRONTIER_ALLOW_DELEGATION is disabled.")).to_be_visible()
+        expect(page.get_by_role("button",name="RUN DELEGATE")).to_have_count(0)
+
         # Managed backup and an isolated restore drill are real server operations.
         page.get_by_role("button",name="Consistency & Recovery").click()
         page.get_by_role("button",name="Create backup").click()
