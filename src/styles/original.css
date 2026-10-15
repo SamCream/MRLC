@@ -245,3 +245,15 @@
   .infra-master-detail.compact-detail{grid-template-columns:1fr}
   .infra-delegate-detail{border-left:0;border-top:1px solid var(--line-soft)}
 }
+
+
+/* A2CM candidate/review controls */
+.a2cm-layout{align-items:start}
+.infra-a2cm-form,.infra-a2cm-review{display:grid;gap:10px}
+.infra-a2cm-form label,.infra-a2cm-review label{display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:10px}
+.infra-a2cm-form input,.infra-a2cm-form select,.infra-a2cm-form textarea,
+.infra-a2cm-review input,.infra-a2cm-review select,.infra-a2cm-review textarea{
+  width:100%;background:#101619;border:1px solid var(--line);color:#dce3e5;border-radius:8px;padding:8px 9px
+}
+.infra-a2cm-form textarea,.infra-a2cm-review textarea{min-height:74px;resize:vertical;line-height:1.45}
+.infra-a2cm-review .infra-kv p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
