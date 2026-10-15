@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+import os
+import sqlite3
+import time
+
+os.environ.setdefault("MRLC_ADMIN_PASSWORD","test-password-very-long")
+os.environ.setdefault("MRLC_ADMIN_TOKEN","test-admin-token-very-long-and-independent-12345")
+os.environ.setdefault("MRLC_SESSION_SECRET","test-signing-key-longer-than-thirty-two-chars-12345")
+
+from fastapi.testclient import TestClient
+from app.main import create_app
+
+PASSWORD="test-password-very-long"
+
+
+class MigratedExecutor:
+    available=True
+    model="migration-test-model"
+    capabilities={"chatCompletions":True}
+
+    async def complete_result(self,system_prompt,messages):
+        return {
+            "content":"infra migration execution",
+            "model":self.model,
+            "inputTokens":11,
+            "outputTokens":7,
+            "costUsd":None,
+            "usageReported":True,
+            "providerRequestId":"provider-migration-1",
+        }
+
+
+def _login(client):
+    result=client.post("/api/v1/auth/login",json={"password":PASSWORD})
+    assert result.status_code==200,result.text
+
+
+def _project(client,name="Infra"):
+    result=client.post("/api/v1/projects",json={"name":name,"description":"migration"})
+    assert result.status_code==201,result.text
+    return result.json()["id"]
+
+
+def test_phase8_events_table_is_migrated_without_losing_sse_history(tmp_path):
+    db=tmp_path/"legacy.sqlite3"
+    with sqlite3.connect(db) as conn:
+        conn.executescript("""
+        CREATE TABLE events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
+            occurred_at TEXT NOT NULL, type TEXT NOT NULL,
+            project_id TEXT, payload TEXT NOT NULL
+        );
+        INSERT INTO events(id,occurred_at,type,project_id,payload)
+        VALUES('evt-old','2026-01-01T00:00:00Z','legacy.event','project-old','{}');
+        """)
+    app=create_app(db_path=str(db),artifact_dir=str(tmp_path/"files"),password=PASSWORD,
+                   secret="s"*40,admin_token="a"*32)
+    try:
+        cols={row["name"] for row in app.state.store.execute("PRAGMA table_info(events)").fetchall()}
+        assert {"event_id","event_type","idempotency_key","sequence"}.issubset(cols)
+        old=app.state.store.execute("SELECT id,type FROM ui_events WHERE id='evt-old'").fetchone()
+        assert old["type"]=="legacy.event"
+    finally:
+        app.state.store.close()
+
+
+def test_fastapi_projection_populates_authoritative_infra_and_replay(tmp_path):
+    app=create_app(db_path=str(tmp_path/"infra.sqlite3"),artifact_dir=str(tmp_path/"files"),
+                   password=PASSWORD,secret="s"*40,admin_token="a"*32)
+    with TestClient(app) as client:
+        _login(client)
+        pid=_project(client)
+        task=client.post(f"/api/v1/projects/{pid}/tasks",json={
+            "projectId":pid,"title":"Core task","description":"bridge",
+            "dependencyIds":[],"acceptanceCriteria":[]
+        })
+        assert task.status_code==201,task.text
+        tid=task.json()["id"]
+
+        status=client.get("/api/v1/infra/status")
+        assert status.status_code==200,status.text
+        body=status.json()
+        assert body["mode"]=="migrated-infra-core"
+        assert body["counts"]["projects"]==1
+        assert body["counts"]["tasks"]==1
+
+        events=client.get(f"/api/v1/projects/{pid}/infra/events").json()["items"]
+        kinds=[event["type"] for event in events]
+        assert "PROJECT_CREATED" in kinds
+        assert "TASK_CREATED" in kinds
+
+        replay=client.get(f"/api/v1/projects/{pid}/infra/replay")
+        assert replay.status_code==200,replay.text
+        assert replay.json()["projects"][pid]=="Infra"
+        assert replay.json()["tasks"][tid]=="CREATED"
+
+
+def test_dispatch_uses_migrated_scheduler_and_gateway_ledger(tmp_path):
+    app=create_app(db_path=str(tmp_path/"runtime.sqlite3"),artifact_dir=str(tmp_path/"files"),
+                   password=PASSWORD,secret="s"*40,admin_token="a"*32,executor=MigratedExecutor())
+    with TestClient(app) as client:
+        _login(client)
+        pid=_project(client,"Runtime")
+        role=client.post("/api/v1/roles",json={
+            "name":"Engineer","purpose":"execute","lifecycle":"active",
+            "capabilities":[],"allowedPermissions":["tasks.execute","messages.reply"]
+        })
+        assert role.status_code==201,role.text
+        rid=role.json()["id"]
+        agent=client.post(f"/api/v1/projects/{pid}/agents",json={"roleTemplateId":rid,"name":"E"})
+        assert agent.status_code==201,agent.text
+        task=client.post(f"/api/v1/projects/{pid}/tasks",json={
+            "projectId":pid,"title":"Execute","assigneeRoleId":rid,
+            "dependencyIds":[],"acceptanceCriteria":[]
+        })
+        assert task.status_code==201,task.text
+
+        dispatched=client.post(f"/api/v1/tasks/{task.json()['id']}/dispatch")
+        assert dispatched.status_code==202,dispatched.text
+        job_id=dispatched.json()["jobId"]
+        deadline=time.monotonic()+5
+        final=None
+        while time.monotonic()<deadline:
+            jobs=client.get("/api/v1/runtime/jobs").json()["items"]
+            final=next(x for x in jobs if x["id"]==job_id)
+            if final["status"] in {"completed","failed","cancelled"}:
+                break
+            time.sleep(.05)
+        assert final and final["status"]=="completed",final
+
+        ledger=app.state.store.execute(
+            "SELECT model,status,provider_request_id,usage_input,usage_output "
+            "FROM gateway_invocations WHERE idempotency_key=?",
+            ("job:"+job_id,)
+        ).fetchone()
+        assert dict(ledger)=={
+            "model":"migration-test-model","status":"COMPLETED",
+            "provider_request_id":"provider-migration-1","usage_input":11,"usage_output":7
+        }
+        scheduler=app.state.store.execute("SELECT state_json FROM scheduler_state WHERE id=1").fetchone()
+        assert scheduler is not None
+        domain=[e.event_type for e in app.state.infra.events.read(pid)]
+        assert "LEASE_ACQUIRED" in domain
+        assert "LEASE_EXPIRED" in domain
+        assert "MODEL_INVOCATION_COMPLETED" in domain
