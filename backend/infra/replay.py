@@ -61,6 +61,8 @@ def _project_events(events: list[Event]) -> ReplayState:
             delegations[str(payload["relation_id"])] = "ACCEPTED"
         elif event.event_type == "REVIEW_REWORK":
             delegations[str(payload["relation_id"])] = "REWORK"
+        elif event.event_type == "DELEGATION_FAILED":
+            delegations[str(payload["relation_id"])] = "FAILED"
         elif event.event_type == "LEASE_ACQUIRED":
             leases[str(payload["resource_id"])] = int(payload["fencing_token"])
         elif event.event_type == "LEASE_EXPIRED":
