@@ -4,6 +4,8 @@ import os
 import sqlite3
 import time
 
+import pytest
+
 os.environ.setdefault("MRLC_ADMIN_PASSWORD","test-password-very-long")
 os.environ.setdefault("MRLC_ADMIN_TOKEN","test-admin-token-very-long-and-independent-12345")
 os.environ.setdefault("MRLC_SESSION_SECRET","test-signing-key-longer-than-thirty-two-chars-12345")
@@ -82,6 +84,8 @@ def test_fastapi_projection_populates_authoritative_infra_and_replay(tmp_path):
         assert status.status_code==200,status.text
         body=status.json()
         assert body["mode"]=="migrated-infra-core"
+        assert body["schema"]["appVersion"]==3
+        assert [m["version"] for m in body["schema"]["migrations"] if m["namespace"]=="app"]==[1,2,3]
         assert body["counts"]["projects"]==1
         assert body["counts"]["tasks"]==1
 
@@ -294,3 +298,38 @@ def test_memory_and_bank_write_apis_are_evented_and_project_scoped(tmp_path):
         assert state["memories"][second.json()["memory_id"]]=="ACTIVE"
         assert state["issues"][issue.json()["issue_id"]]=="RESOLVED"
         assert decision.json()["decision_id"] in state["decisions"]
+
+
+def test_app_schema_migrations_are_idempotent_and_checksum_guarded(tmp_path):
+    db=tmp_path/"schema-ledger.sqlite3"
+    app=create_app(
+        db_path=str(db),artifact_dir=str(tmp_path/"files"),
+        password=PASSWORD,secret="s"*40,admin_token="a"*32,
+    )
+    first=app.state.store.schema_migrations()
+    assert [(row["namespace"],row["version"],row["name"]) for row in first]==[
+        ("app",1,"compatibility-base"),
+        ("app",2,"phase8-runtime-columns"),
+        ("app",3,"infra-runtime-extensions"),
+    ]
+    app.state.store.close()
+
+    reopened=create_app(
+        db_path=str(db),artifact_dir=str(tmp_path/"files"),
+        password=PASSWORD,secret="s"*40,admin_token="a"*32,
+    )
+    try:
+        assert reopened.state.store.schema_migrations()==first
+    finally:
+        reopened.state.store.close()
+
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE schema_migrations SET checksum='tampered' "
+            "WHERE namespace='app' AND version=2"
+        )
+    with pytest.raises(RuntimeError,match="schema migration app/2 signature mismatch"):
+        create_app(
+            db_path=str(db),artifact_dir=str(tmp_path/"files"),
+            password=PASSWORD,secret="s"*40,admin_token="a"*32,
+        )
