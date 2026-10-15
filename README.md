@@ -47,7 +47,9 @@ To preview with no server, explicitly set `VITE_DATA_SOURCE=mock` (for example i
 
 For single-origin production hosting, build the frontend first and run `./scripts/run.sh prod`.
 
+
 > In `./scripts/run.sh dev`, FastAPI static serving is forcibly disabled. A production `MRLC_STATIC_DIR` left in `backend/.env` therefore does not require `dist/` to exist during development.
+
 
 ### Password and URL-token login
 
