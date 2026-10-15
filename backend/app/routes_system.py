@@ -242,10 +242,10 @@ def register(api,store:Store,runtime):
         cursor=request.query_params.get('since',last)
         seq=0
         if cursor:
-            r=store.execute('SELECT seq FROM events WHERE id=?',(cursor,)).fetchone()
+            r=store.execute('SELECT seq FROM ui_events WHERE id=?',(cursor,)).fetchone()
             if r:seq=r['seq']
         else:
-            r=store.execute('SELECT COALESCE(MAX(seq),0) AS n FROM events').fetchone()
+            r=store.execute('SELECT COALESCE(MAX(seq),0) AS n FROM ui_events').fetchone()
             seq=r['n']
         async def stream():
             nonlocal seq
