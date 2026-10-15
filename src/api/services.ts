@@ -1,6 +1,6 @@
 import type { CreateRole, UpdateRole, UpdateProject, AgentAssignment, RoleTransition } from '../data/organizationRepository';
 import { ApiClient, idSegment as id, query } from './client';
-import type { Project, Task, NewTask, Agent, RoleTemplate, Channel, Message, Artifact, ArtifactVersion, EvidenceLink, Approval, ApprovalRecord, ApprovalDecisionInput, ComputeSlot, RuntimeQueueItem, RuntimeMetrics, RuntimeBudget, RuntimeSession, AuditLog, Page, SystemHealth, SystemTopology, InfrastructureNode, Accelerator, LogFilter, LogSavedView, LogExportRequest, LogExportJob, ProjectRuntimeSettings, ProjectOverviewSnapshot, AppearanceSettings, AuthAccount, LoginTokenStatus, LoginTokenResult, InfraStatus, InfraOverview, InfraEvent, InfraReplayState, InfraReplayCompare, InfraSchedulerSnapshot, InfraMemoryItem, InfraContextView, InfraBankView, InfraProvenance, InfraInvocation, InfraConsistency, InfraOperations, InfraBackupRun, InfraBackupActionResult } from '../domain/models';
+import type { Project, Task, NewTask, Agent, RoleTemplate, Channel, Message, Artifact, ArtifactVersion, EvidenceLink, Approval, ApprovalRecord, ApprovalDecisionInput, ComputeSlot, RuntimeQueueItem, RuntimeMetrics, RuntimeBudget, RuntimeSession, AuditLog, Page, SystemHealth, SystemTopology, InfrastructureNode, Accelerator, LogFilter, LogSavedView, LogExportRequest, LogExportJob, ProjectRuntimeSettings, ProjectOverviewSnapshot, AppearanceSettings, AuthAccount, LoginTokenStatus, LoginTokenResult, InfraStatus, InfraOverview, InfraEvent, InfraReplayState, InfraReplayCompare, InfraSchedulerSnapshot, InfraMemoryItem, InfraContextView, InfraBankView, InfraFrontierSnapshot, InfraFrontierConsultResult, InfraProvenance, InfraInvocation, InfraConsistency, InfraOperations, InfraBackupRun, InfraBackupActionResult } from '../domain/models';
 
 /** Candidate REST surface; paths must be negotiated with the real backend. */
 export function createServices(http: ApiClient) {
@@ -15,6 +15,8 @@ export function createServices(http: ApiClient) {
       memory:(projectId:string,roleId='shared')=>http.get<Page<InfraMemoryItem>>(`/api/v1/projects/${id(projectId)}/infra/memory${query({roleId})}`),
       context:(projectId:string)=>http.get<InfraContextView>(`/api/v1/projects/${id(projectId)}/infra/context`),
       bank:(projectId:string)=>http.get<InfraBankView>(`/api/v1/projects/${id(projectId)}/infra/bank`),
+      frontier:(projectId:string)=>http.get<InfraFrontierSnapshot>(`/api/v1/projects/${id(projectId)}/infra/frontier`),
+      frontierConsult:(projectId:string,input:{parentTaskId:string;ownerSessionId:string;capability:string;budget:number;operationId:string})=>http.post<InfraFrontierConsultResult>(`/api/v1/projects/${id(projectId)}/infra/frontier/consult`,input),
       provenance:(projectId:string)=>http.get<InfraProvenance>(`/api/v1/projects/${id(projectId)}/infra/provenance`),
       invocations:(projectId:string)=>http.get<Page<InfraInvocation>>(`/api/v1/projects/${id(projectId)}/infra/invocations`),
       consistency:(projectId:string)=>http.get<InfraConsistency>(`/api/v1/projects/${id(projectId)}/infra/consistency`),
