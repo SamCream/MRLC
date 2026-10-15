@@ -1,26 +1,56 @@
-# MRLC Backend Status — Phase 7 (2026-10-14)
+# MRLC Backend Status — 0.9 Infra Migration (2026-10-15)
 
-**Changed from Phase 6:** The repository now contains a real `backend/` service. The frontend defaults to `http` mode and communicates through same-origin `/api`. There is no business-logic-only browser substitute for real deployments.
+The current backend keeps the Phase 8.1 React/FastAPI HTTP contract while migrating the mature legacy MRLC Infra/Runtime implementation underneath it. The React UI is unchanged in this migration.
 
-## Implemented and tested
+## Implemented and connected
 
-1. **Backend core** — FastAPI server, SQLite WAL persistence, artifact content-addressed files, signed HttpOnly operator sessions, disallowed cross-origin mutation, per-mutation audit records and replayable SSE events.
-2. **Projects, role templates and Agent instances** — Real create/edit/archive/assignment, role permission checks and lifecycle guards. Park is rejected on active/queued execution without a checkpoint adapter.
-3. **Tasks** — project-scoped tasks with dependency acyclicity checks, criteria evidence linking, controlled state transitions, server verification, recorded acceptance and milestone event generation.
-4. **Workspace** — channel/message persistence, attachment project validation and explicit authorized model response requests.
-5. **Artifacts** — actual uploaded file content, SHA-256, version history, task association, byte download, project-scope rules.
-6. **Approvals** — durable decision history, optimistic revision conflict detection and structured reduced scope.
-7. **Execution** — backend task queue and bounded worker with a *real* OpenAI-compatible HTTP call adapter; job status/outputs persisted, failures visible. Logical slots and sessions reflect jobs actually running, not fake GPU allocations.
-8. **System** — server-derived Overview, project runtime settings and appearance persistence, logged audit reads/exports, topology/health with missing metrics represented truthfully.
-9. **Frontend linkage** — AuthGate, Vite proxy, API adapters and SSE revalidation. Backend-only Task Execute, evidence verify, Accept and explicit Agent reply buttons.
+1. **FastAPI application layer** — current authenticated `/api/v1` routes, multi-user RBAC, project membership, URL-token/password sessions, origin guards and HttpOnly cookies remain intact.
+2. **Shared durable database** — the FastAPI compatibility projection and migrated Infra core use the same SQLite database.
+3. **Authoritative domain EventStore** — project-local sequence, idempotency keys, actor/session/task/correlation/causation metadata, subscriptions and deterministic replay.
+4. **Compatibility event migration** — the old Phase 8 UI/SSE `events` table upgrades in-place to `ui_events`; `events` is now reserved for authoritative Infra domain events.
+5. **Projects / Tasks / Sessions** — current FastAPI mutations are synchronized transactionally into the migrated registries. Task dependencies and accepted/completed evidence are replayable.
+6. **Consistency primitives** — CAS aggregates, transactional outbox/inbox, lease fencing, sagas, retry/dead-letter metadata and crash-recovery primitives are migrated.
+7. **Scheduler** — current task/chat jobs are admitted into the migrated persistent Scheduler. Worker selection uses Scheduler dispatch; lease acquisition/release is recorded as domain facts and reconciled after restart.
+8. **Provider layer** — FastAPI model execution uses the migrated CCR OpenAI-compatible Provider adapter. Successful calls are recorded in the migrated Model Gateway ledger with provider request IDs and measured usage when reported.
+9. **History** — new channel messages are written to the Infra History store while the current UI message projection remains unchanged.
+10. **Memory** — evidence-backed, role/project-scoped, temporal Memory and retrieval pipeline are migrated. Backend-only create/read/supersede APIs are exposed; ordinary chat is not silently promoted into long-term memory.
+11. **Project Bank** — ISS/DEC/LES/PRG storage is migrated. Resolved current FastAPI approvals become Bank decisions; backend-only Bank write routes are available.
+12. **Artifacts / evidence** — the newer disk-backed SHA-256 artifact byte store is retained, while Infra receives replayable `ARTIFACT_RECORDED` / `EVIDENCE_LINKED` facts.
+13. **Runtime / adapters** — legacy Conversation, routing, rollover, Frontier advisor/delegate, Codex, DSH, Git worktree and WorkerRunStore implementations are present under the backend tree.
+14. **Recovery / security primitives** — backup/restore implementation, continuity checkpoints, MCP/Skill ACL registries, risk policy/audit, credential-file validation and secret redaction code are migrated.
 
-## Not implemented (do not label complete)
+See `backend/INFRA_MIGRATION.md` for the authority boundaries and compatibility decisions.
 
-- Actual MRLC/CCR/A2CM backend repository integration: source/configuration of those systems was **not provided** in this task. The model adapter works only with a confirmed OpenAI-compatible endpoint.
-- Full historical MRLC PRD implementation (Coordinator/Reporter orchestration, knowledge projections beyond explicit evidence, research/code-development workflow plugins, autonomous typed approval effects, run recovery and complex scheduling policies).
-- Real model context snapshot/restore, provider-specific Park/Resume, running-job preemption or physical GPU lease controller. Unsupported runtime actions return errors.
-- Authentic GPU/NVML metrics, context prefill/decode rates, provider budget metering, model billing reconciliation.
-- Multi-user RBAC, SSO, encryption-at-rest, strong cryptographic audit integrity, migration versioning, backup and recovery automation, distributed worker/leader election.
-- Production React/Vite build and browser UI E2E verification on this machine: npm dependencies could not be installed from the registry in the prior frontend phases. The frontend static TypeScript shim, historical contract suite, backend tests and real HTTP startup have been tested separately.
+## Deliberately retained from the newer backend
 
-**Interpretation:** The service is a working single-operator backend foundation and can run actual model jobs when you configure a compatible provider. It is **not production-ready** and is not a drop-in implementation of every MRLC research orchestration requirement.
+- The new RBAC/account/token implementation. The legacy Console plaintext identity-token file is not restored.
+- The disk-backed content-addressed Artifact store rather than storing artifact bytes as SQLite BLOBs.
+- The current FastAPI server as the only product HTTP entry point.
+- Current React/API contracts and UI behavior.
+
+## Migrated but not yet activated through the current React UI
+
+These capabilities exist in backend code but are not silently substituted for current UI workflows:
+
+- legacy Dev group-chat ConversationService;
+- Frontier Delegate controls and Child worktree workflow;
+- direct Codex/DSH worker launch controls;
+- A2CM-specific workflows;
+- legacy Console command/web server.
+
+They should be exposed through typed FastAPI endpoints when their product/API contract is selected. Re-starting the old Console server would create a second control plane and is intentionally avoided.
+
+## Still not production-complete
+
+- Database migration files are still not a complete versioned migration framework; current upgrade logic is additive/in-place.
+- Provider-specific model KV checkpoint/restore and generic pause/resume are not claimed.
+- Physical GPU lease/control is not claimed; scheduler leases are logical runtime leases.
+- Distributed multi-node leader election and external transactional database support are not implemented.
+- SSO/federation, encryption-at-rest and production key-management integration remain outside the current scope.
+- Browser E2E for the newly migrated backend-only endpoints has not been added because this migration intentionally does not modify the UI.
+
+## Verification
+
+The migration branch has a backend-only GitHub Actions gate that compiles `app/infra/runtime/gateway/adapters` and runs the complete backend test tree. The suite includes the original FastAPI integration tests, migration-specific tests and ported legacy Infra core regressions.
+
+A green backend workflow is required before merge.
