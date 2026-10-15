@@ -89,7 +89,7 @@ def main() -> None:
 
         # Frontier surfaces are factual capability gates. CI has no CCR/worker binary,
         # so neither paid CONSULT nor child DELEGATE may pretend to be available.
-        page.get_by_role("button",name="Provenance").click()
+        page.locator(".sidebar .nav-item").filter(has_text="Provenance").click()
         expect(page.get_by_text(re.compile("CCR_API_KEY is not configured"))).to_be_visible(timeout=10_000)
         expect(page.get_by_text("MRLC_FRONTIER_ALLOW_DELEGATION is disabled.")).to_be_visible()
         expect(page.get_by_role("button",name="RUN DELEGATE")).to_have_count(0)
