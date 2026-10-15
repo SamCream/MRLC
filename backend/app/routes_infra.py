@@ -297,6 +297,71 @@ def register(api,store,runtime):
             value=dict(row);value['artifact_refs']=list(filter(None,str(value.get('artifact_refs') or '').split('\n')));progress.append(value)
         return {'issues':issues,'decisions':decisions,'lessons':lessons,'progress':progress}
 
+    @api.get('/api/v1/projects/{project_id}/infra/a2cm')
+    def infra_a2cm(project_id:str,_:Any=Depends(logged_in)):
+        project(store,project_id)
+        return core.a2cm_snapshot(project_id)
+
+    @api.post('/api/v1/projects/{project_id}/infra/a2cm/primary-session',status_code=201)
+    def infra_a2cm_primary(project_id:str,principal:Any=Depends(logged_in)):
+        project(store,project_id,True)
+        if not principal.allows('approvals.decide',project_id):
+            bad('Missing permission: approvals.decide',403)
+        with store.tx():
+            return core.ensure_a2cm_primary(project_id,actor_id=principal.id)
+
+    @api.post('/api/v1/projects/{project_id}/infra/a2cm/observations',status_code=201)
+    def infra_a2cm_observation(project_id:str,body:dict,principal:Any=Depends(logged_in)):
+        project(store,project_id,True)
+        if not principal.allows('tasks.execute',project_id):
+            bad('Missing permission: tasks.execute',403)
+        try:
+            confidence=float(body.get('confidence',0.5))
+        except (TypeError,ValueError):
+            bad('confidence must be numeric',400)
+        source=str(body.get('source') or 'fast_tool')
+        if source not in {'fast_tool','primary','frontier'}:
+            bad('source must be fast_tool, primary or frontier',400)
+        try:
+            with store.tx():
+                return core.record_a2cm_observation(
+                    project_id=project_id,actor_id=principal.id,
+                    content=nonempty(body.get('content'),'content',100000),
+                    evidence_event_id=nonempty(body.get('evidenceEventId'),'evidenceEventId',160),
+                    confidence=confidence,source=source,
+                )
+        except (ValueError,PermissionError) as exc:
+            bad(str(exc),400)
+
+    @api.post('/api/v1/projects/{project_id}/infra/a2cm/candidates/{candidate_id}/review')
+    def infra_a2cm_review(project_id:str,candidate_id:str,body:dict,principal:Any=Depends(logged_in)):
+        project(store,project_id,True)
+        if not principal.allows('approvals.decide',project_id):
+            bad('Missing permission: approvals.decide',403)
+        counter=tuple(list_of_str(body.get('counterevidence',[]),'counterevidence'))
+        uncertainty=tuple(list_of_str(body.get('uncertainty',[]),'uncertainty'))
+        if len(counter)>20 or len(uncertainty)>20:
+            bad('counterevidence/uncertainty support at most 20 entries each',400)
+        if any(len(item)>1000 for item in (*counter,*uncertainty)):
+            bad('counterevidence/uncertainty entries must be at most 1000 characters',400)
+        try:
+            with store.tx():
+                return core.review_a2cm_candidate(
+                    project_id=project_id,candidate_id=candidate_id,
+                    primary_session_id=nonempty(body.get('primarySessionId'),'primarySessionId',160),
+                    decision=oneof(body.get('decision'),('PROMOTE','REJECT','DEFER'),'decision'),
+                    policy_version=nonempty(body.get('policyVersion'),'policyVersion',160),
+                    counterevidence=counter,uncertainty=uncertainty,
+                    rationale=nonempty(body.get('rationale'),'rationale',4000),
+                    actor_id=principal.id,
+                )
+        except KeyError as exc:
+            bad(str(exc),404)
+        except PermissionError as exc:
+            bad(str(exc),403)
+        except ValueError as exc:
+            bad(str(exc),409)
+
     @api.get('/api/v1/projects/{project_id}/infra/frontier')
     def infra_frontier(project_id:str,_:Any=Depends(logged_in)):
         project(store,project_id)
