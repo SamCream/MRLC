@@ -9,8 +9,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime, timezone
+from uuid import uuid4
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +36,11 @@ from infra.retrieval.pipeline import RetrievalPipeline, RetrievalDocument
 from infra.frontier import (
     FrontierAdvisorUnavailable, FrontierMode, FrontierPolicy, FrontierRequest, FrontierService,
 )
+from infra.delegation_store import DelegationStore
+from infra.runtime import DelegationSpec, Profile, RoleDefinition, Runtime
+from adapters.git import worktree as gitwt
 from runtime.frontier_advisor import FrontierAdvisor
+from runtime.frontier_delegate import delegate_permission_mode
 
 
 _TASK_STATE = {
@@ -75,15 +81,46 @@ class InfraBridge:
         self.frontier_advisor=(
             FrontierAdvisor(gateway=self.model_gateway) if os.getenv("CCR_API_KEY") else None
         )
-        # CONSULT is productized through FastAPI below. DELEGATE remains disabled here
-        # until the migrated runner shares this process's WorkerRunStore authority.
+        delegate_enabled=os.getenv("MRLC_FRONTIER_ALLOW_DELEGATION","false").lower()=="true"
         self.frontier=FrontierService(
-            FrontierPolicy(allow_delegation=False,budget=frontier_budget,max_depth=1),
+            FrontierPolicy(allow_delegation=delegate_enabled,budget=frontier_budget,max_depth=1),
             database_path=database_path,
             advisor=self.frontier_advisor,
         )
+        self.runtime=Runtime(
+            Profile("frontier",{
+                "owner":RoleDefinition("owner",frozenset(),frozenset({"delegate"})),
+            }),
+            database_path=database_path,
+        )
+        DelegationStore.initialize(self.store.conn)
+        self.delegate_runner=None
+        self.infra=self
         store.infra_bridge = self
         self.reconcile_projection()
+
+    def connect(self):
+        connection=sqlite3.connect(self.database_path,timeout=30.0)
+        connection.row_factory=sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 30000")
+        connection.execute("PRAGMA foreign_keys = ON")
+        return connection
+
+    def event(
+        self, project_id: str, event_type: str, payload: dict[str, Any], *,
+        actor_id: str="system", actor_type: str="system", session_id: str|None=None,
+        task_id: str|None=None, idempotency_key: str,
+    ) -> Event:
+        return Event(
+            event_id="evt_"+hashlib.sha256(idempotency_key.encode()).hexdigest()[:32],
+            project_id=project_id,event_type=event_type,payload=payload,
+            occurred_at=datetime.now(timezone.utc),idempotency_key=idempotency_key,
+            actor_type=actor_type,actor_id=actor_id,session_id=session_id,task_id=task_id,
+            correlation_id=idempotency_key,
+        )
+
+    def attach_delegate_runner(self, runner) -> None:
+        self.delegate_runner=runner
 
     @staticmethod
     def _key(prefix: str, body: dict[str, Any]) -> str:
@@ -620,11 +657,283 @@ class InfraBridge:
                              else "CCR_API_KEY is not configured; no Frontier call will be made.",
                 },
                 "delegate":{
-                    "available":False,
-                    "reason":"FastAPI DELEGATE remains disabled until the migrated runner shares the authoritative WorkerRunStore and lifecycle.",
+                    "available":bool(self.frontier.policy.allow_delegation and self.delegate_runner is not None),
+                    "reason":(
+                        None if self.frontier.policy.allow_delegation and self.delegate_runner is not None
+                        else "MRLC_FRONTIER_ALLOW_DELEGATION is disabled."
+                        if not self.frontier.policy.allow_delegation
+                        else "Delegation worker failed to initialize."
+                    ),
+                    "worker":getattr(self.delegate_runner,"worker_kind",None),
+                    "permissionMode":(
+                        delegate_permission_mode() if self.delegate_runner is not None else None
+                    ),
                 },
             },
             "sessions":sessions,"tasks":tasks,"requests":requests,
+            "delegateRuns":[
+                {
+                    "requestId":row["request_id"],"relationId":row["relation_id"],
+                    "parentTaskId":row["parent_task_id"],"ownerSessionId":row["owner_session_id"],
+                    "childSessionId":row["child_session_id"],"childTaskId":row["child_task_id"],
+                    "capability":row["capability"],"state":row["state"],
+                    "branch":row["branch"],"commitSha":row["commit_sha"],"mergeSha":row["merge_sha"],
+                    "error":row["error"],"createdAt":float(row["created_at"]),
+                }
+                for row in self.store.conn.execute(
+                    "SELECT * FROM frontier_delegate_runs WHERE project_id=? "
+                    "ORDER BY created_at DESC LIMIT 100",(project_id,)
+                ).fetchall()
+            ],
+        }
+
+    def frontier_delegate(
+        self, *, project_id: str, parent_task_id: str, owner_session_id: str,
+        capability: str, objective: str, acceptance_commands: list[str], budget: int,
+        actor_id: str, operation_id: str, confirmation: str,
+    ) -> dict[str, Any]:
+        if not self.frontier.policy.allow_delegation or self.delegate_runner is None:
+            raise RuntimeError("frontier DELEGATE is not available in this runtime")
+        if confirmation!="RUN_DELEGATE":
+            raise ValueError("confirmation must equal RUN_DELEGATE")
+        if not capability.strip() or not objective.strip():
+            raise ValueError("capability and objective must not be empty")
+        if len(capability)>500 or len(objective)>8000:
+            raise ValueError("capability/objective is too long")
+        if type(budget) is not int or budget<1 or budget>self.frontier.policy.budget:
+            raise ValueError(
+                f"budget must be an integer between 1 and {self.frontier.policy.budget}"
+            )
+        if not isinstance(acceptance_commands,list) or not acceptance_commands:
+            raise ValueError("acceptanceCommands must contain at least one command")
+        commands=[]
+        for command in acceptance_commands:
+            if not isinstance(command,str) or not command.strip() or len(command)>1000:
+                raise ValueError("acceptance commands must be non-empty strings up to 1000 chars")
+            commands.append(command.strip())
+        if len(commands)>20:
+            raise ValueError("at most 20 acceptance commands are allowed")
+        if not operation_id.strip() or len(operation_id)>128:
+            raise ValueError("operationId must contain 1-128 characters")
+
+        task=self.store.conn.execute(
+            "SELECT project_id FROM tasks WHERE task_id=?",(parent_task_id,)
+        ).fetchone()
+        if task is None or task["project_id"]!=project_id:
+            raise ValueError("parent task must belong to this project")
+        session=self.store.conn.execute(
+            "SELECT project_id,lifecycle FROM sessions WHERE session_id=?",(owner_session_id,)
+        ).fetchone()
+        if session is None or session["project_id"]!=project_id:
+            raise ValueError("owner session must belong to this project")
+        if session["lifecycle"]!="ACTIVE":
+            raise ValueError("owner session must be ACTIVE")
+
+        existing=self.store.conn.execute(
+            "SELECT status,request_id,error FROM frontier_delegate_operations "
+            "WHERE actor_id=? AND operation_id=?",(actor_id,operation_id)
+        ).fetchone()
+        if existing is not None:
+            if existing["status"]=="COMPLETED" and existing["request_id"]:
+                run=DelegationStore.current(self.store.conn,existing["request_id"])
+                if run is None:
+                    raise RuntimeError("completed delegation receipt references missing run")
+                return self._delegate_run_payload(run,operation_id=operation_id,replayed=True)
+            raise RuntimeError(
+                "operationId already used for a non-completed Frontier delegation: "
+                +(existing["error"] or existing["status"])
+            )
+
+        child_session=Session(
+            f"ses_{uuid4().hex}",project_id,"frontier","frontier.child",
+            runtime_adapter=getattr(self.delegate_runner,"worker_kind","unknown"),
+            model_binding=getattr(self.delegate_runner,"model_binding","router-managed"),
+        )
+        child_task=Task(
+            f"tsk_{uuid4().hex}",project_id,
+            "Frontier: "+capability.strip()[:120],"CREATED",
+        )
+        relation_id=f"rel_{uuid4().hex}"
+        created=datetime.now(timezone.utc).isoformat()
+        permission_mode=delegate_permission_mode()
+        with self.store.tx():
+            self.store.conn.execute(
+                "INSERT INTO frontier_delegate_operations("
+                "actor_id,operation_id,project_id,status,created_at) VALUES(?,?,?,?,?)",
+                (actor_id,operation_id,project_id,"RUNNING",created)
+            )
+            self.sessions.create_in_connection(self.store.conn,child_session)
+            self.tasks.create_in_connection(self.store.conn,child_task)
+            self.tasks.set_parent_in_connection(self.store.conn,child_task.task_id,parent_task_id)
+            self.tasks.transition_in_connection(self.store.conn,child_task.task_id,"CREATED","RUNNABLE")
+            result=self.frontier.execute(
+                FrontierRequest(
+                    project_id,parent_task_id,owner_session_id,capability.strip(),
+                    FrontierMode.DELEGATE,budget,0,child_session.session_id,
+                ),
+                connection=self.store.conn,
+            )
+            Runtime.delegate_in_connection(
+                self.store.conn,
+                DelegationSpec(
+                    project_id,parent_task_id,owner_session_id,child_session.session_id,
+                    "frontier.delegate",result.return_contract or "artifact,tests,risks",
+                ),
+                relation_id,
+            )
+            DelegationStore.add(
+                self.store.conn,request_id=result.request_id,project_id=project_id,
+                actor_id=actor_id,relation_id=relation_id,parent_task_id=parent_task_id,
+                owner_session_id=owner_session_id,child_session_id=child_session.session_id,
+                child_task_id=child_task.task_id,capability=capability.strip(),
+                objective=objective.strip(),acceptance_commands=commands,budget=budget,
+                permission_mode=permission_mode,
+                disclosure={"operation_id":operation_id,"actor_id":actor_id},
+            )
+            DelegationStore.set_request_state(self.store.conn,result.request_id,"CHILD_QUEUED")
+            self._append(
+                project_id,"SESSION_CREATED",
+                {"session_id":child_session.session_id,"application_id":"frontier",
+                 "role_id":"frontier.child"},
+                actor_id=actor_id,
+                idempotency_key=f"frontier-delegate:{operation_id}:session",
+            )
+            self._append(
+                project_id,"TASK_CREATED",
+                {"task_id":child_task.task_id,"title":child_task.title,"state":"RUNNABLE",
+                 "parent_task_id":parent_task_id},
+                actor_id=actor_id,
+                idempotency_key=f"frontier-delegate:{operation_id}:task",
+                task_id=child_task.task_id,
+            )
+            self._append(
+                project_id,"FRONTIER_DELEGATE_QUEUED",
+                {"request_id":result.request_id,"relation_id":relation_id,
+                 "parent_task_id":parent_task_id,"child_task_id":child_task.task_id,
+                 "child_session_id":child_session.session_id,"budget":budget,
+                 "permission_mode":permission_mode},
+                actor_id=actor_id,
+                idempotency_key=f"frontier-delegate:{operation_id}:queued",
+                task_id=parent_task_id,
+            )
+            self.store.conn.execute(
+                "UPDATE frontier_delegate_operations SET status='COMPLETED',request_id=?,completed_at=? "
+                "WHERE actor_id=? AND operation_id=?",
+                (result.request_id,datetime.now(timezone.utc).isoformat(),actor_id,operation_id)
+            )
+            self.store.emit(
+                "infra.frontier.delegate.queued",project_id,
+                {"requestId":result.request_id,"operationId":operation_id},
+            )
+            run=DelegationStore.current(self.store.conn,result.request_id)
+        assert run is not None
+        return self._delegate_run_payload(run,operation_id=operation_id,replayed=False)
+
+    def frontier_cancel_delegate(
+        self, *, project_id: str, request_id: str, actor_id: str, rationale: str,
+    ) -> dict[str, Any]:
+        if self.delegate_runner is None:
+            raise RuntimeError("delegation runner is unavailable")
+        if not rationale.strip():
+            raise ValueError("rationale must not be empty")
+        with self.store.tx():
+            run=DelegationStore.current(self.store.conn,request_id)
+            if run is None or run["project_id"]!=project_id:
+                raise KeyError("unknown delegate run in this project")
+            if run["state"]=="QUEUED":
+                self.store.conn.execute(
+                    "UPDATE frontier_delegate_runs SET state='RUNNING' WHERE request_id=?",(request_id,)
+                )
+                DelegationStore.finish(
+                    self.store.conn,request_id,"CANCELLED",error="operator cancelled before start"
+                )
+                DelegationStore.set_request_state(self.store.conn,request_id,"CANCELLED")
+                Runtime.finish_in_connection(
+                    self.store.conn,run["relation_id"],"FAILED",
+                    json.dumps({"error":"operator cancelled before start"},sort_keys=True),
+                )
+                self.tasks.transition_in_connection(
+                    self.store.conn,run["child_task_id"],"RUNNABLE","FAILED"
+                )
+                state="CANCELLED";signal=None
+            elif run["state"]=="RUNNING" and DelegationStore.mark_cancel_requested(
+                self.store.conn,request_id
+            ):
+                signal=None
+                if run["worker_handle"]:
+                    try:
+                        signal=self.delegate_runner.adapter.cancel(
+                            run["worker_handle"],reason=rationale.strip(),fencing_token=1
+                        ).status
+                    except Exception:
+                        signal="UNKNOWN"
+                state="CANCEL_REQUESTED"
+            else:
+                raise ValueError("child is not queued/running; nothing to cancel")
+            self._append(
+                project_id,"FRONTIER_DELEGATE_CANCEL_REQUESTED",
+                {"request_id":request_id,"state":state,"worker_signal":signal,
+                 "rationale":rationale.strip()[:1000]},
+                actor_id=actor_id,
+                idempotency_key=self._key(f"frontier-cancel:{request_id}",{"state":state,"rationale":rationale.strip()}),
+                task_id=run["parent_task_id"],
+            )
+            self.store.emit("infra.frontier.delegate.cancelled",project_id,{"requestId":request_id,"state":state})
+        return {"requestId":request_id,"state":state,"workerSignal":signal}
+
+    def frontier_review_delegate(
+        self, *, project_id: str, request_id: str, owner_session_id: str,
+        decision: str, actor_id: str, rationale: str,
+    ) -> dict[str, Any]:
+        if self.delegate_runner is None:
+            raise RuntimeError("delegation runner is unavailable")
+        if decision not in {"ACCEPT","REWORK"}:
+            raise ValueError("decision must be ACCEPT or REWORK")
+        if not rationale.strip():
+            raise ValueError("rationale must not be empty")
+        run=DelegationStore.current(self.store.conn,request_id)
+        if run is None or run["project_id"]!=project_id:
+            raise KeyError("unknown delegate run in this project")
+        if run["owner_session_id"]!=owner_session_id:
+            raise PermissionError("reviewer session is not the delegation owner")
+        if run["state"]!="WAIT_OWNER_REVIEW":
+            raise ValueError("frontier child has not returned for review")
+        merge_sha=None
+        if decision=="ACCEPT":
+            if not run["branch"]:
+                raise RuntimeError("delegation branch binding is unavailable")
+            merge_sha=gitwt.merge_reviewed(
+                self.delegate_runner.repository(project_id),run["branch"],"main",
+                "merge: reviewed frontier "+request_id[-12:],
+            )
+        with self.store.tx():
+            relation=Runtime.review_in_connection(
+                self.store.conn,project_id,run["relation_id"],owner_session_id,decision
+            )
+            state="ACCEPTED" if relation.state=="ACCEPTED" else "REWORK"
+            DelegationStore.review(self.store.conn,request_id,state,merge_sha)
+            self._append(
+                project_id,"DELEGATION_REVIEWED",
+                {"request_id":request_id,"relation_id":run["relation_id"],
+                 "decision":decision,"state":state,"merge_sha":merge_sha,
+                 "rationale":rationale.strip()[:1000]},
+                actor_id=actor_id,
+                idempotency_key=self._key(f"frontier-review:{request_id}",{"decision":decision,"rationale":rationale.strip()}),
+                task_id=run["parent_task_id"],
+            )
+            self.store.emit("infra.frontier.delegate.reviewed",project_id,{"requestId":request_id,"state":state})
+        return {"requestId":request_id,"state":state,"mergeSha":merge_sha}
+
+    @staticmethod
+    def _delegate_run_payload(run, *, operation_id: str|None=None, replayed: bool=False) -> dict[str, Any]:
+        return {
+            "requestId":run["request_id"],"relationId":run["relation_id"],
+            "projectId":run["project_id"],"parentTaskId":run["parent_task_id"],
+            "ownerSessionId":run["owner_session_id"],"childSessionId":run["child_session_id"],
+            "childTaskId":run["child_task_id"],"capability":run["capability"],
+            "state":run["state"],"branch":run["branch"],"commitSha":run["commit_sha"],
+            "mergeSha":run["merge_sha"],"error":run["error"],
+            "operationId":operation_id,"replayed":replayed,
         }
 
     def frontier_consult(
