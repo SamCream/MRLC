@@ -237,7 +237,11 @@ def register(api,store:Store,runtime):
                     chosen=[pinned,*chosen][:4]
             else:
                 relevant=[item for item in ranked if item['score']>0]
-                chosen=(relevant[:4] if relevant else ranked[:1])
+                if explicit_agent_id:
+                    pinned=next(item for item in ranked if item['agent']['id']==explicit_agent_id)
+                    chosen=[pinned,*[item for item in relevant if item['agent']['id']!=explicit_agent_id]][:4]
+                else:
+                    chosen=(relevant[:4] if relevant else ranked[:1])
 
             # One responder per role unless the user explicitly selected a concrete Agent.
             unique=[];seen_roles=set()
