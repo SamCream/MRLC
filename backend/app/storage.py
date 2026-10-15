@@ -93,6 +93,15 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS idx_frontier_consult_project
                     ON frontier_consult_operations(project_id,created_at);
+                CREATE TABLE IF NOT EXISTS frontier_delegate_operations (
+                    actor_id TEXT NOT NULL, operation_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL, status TEXT NOT NULL,
+                    request_id TEXT, error TEXT, created_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    PRIMARY KEY(actor_id,operation_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_frontier_delegate_project
+                    ON frontier_delegate_operations(project_id,created_at);
             ''')
             # Lightweight in-place migrations for Phase 8 runtime/audit fields.
             self._ensure_column('jobs','priority','INTEGER NOT NULL DEFAULT 50')
