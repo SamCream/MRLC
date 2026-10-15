@@ -139,18 +139,34 @@ export interface InfraFrontierRequest {
   childSessionId:string|null;advice:string|null;returnContract:string|null;
   reviewState:string;budgetUsed:number;
 }
+export interface InfraFrontierDelegateRun {
+  requestId:string;relationId:string;parentTaskId:string;ownerSessionId:string;
+  childSessionId:string;childTaskId:string;capability:string;state:string;
+  branch:string|null;commitSha:string|null;mergeSha:string|null;error:string|null;
+  createdAt:number;
+}
 export interface InfraFrontierSnapshot {
   capabilities:{
     consult:{available:boolean;budgetLimit:number;reason:string|null};
-    delegate:{available:boolean;reason:string|null};
+    delegate:{available:boolean;reason:string|null;worker?:string|null;permissionMode?:string|null};
   };
   sessions:Array<{sessionId:string;roleId:string;lifecycle:string}>;
   tasks:Array<{taskId:string;state:string}>;
   requests:InfraFrontierRequest[];
+  delegateRuns:InfraFrontierDelegateRun[];
 }
 export interface InfraFrontierConsultResult {
   requestId:string;projectId:string;mode:string;ownerSessionId:string;advice:string|null;
   reviewState:string;budgetUsed:number;operationId:string;replayed:boolean;
+}
+export interface InfraFrontierDelegateResult {
+  requestId:string;relationId:string;projectId:string;parentTaskId:string;ownerSessionId:string;
+  childSessionId:string;childTaskId:string;capability:string;state:string;
+  branch:string|null;commitSha:string|null;mergeSha:string|null;error:string|null;
+  operationId:string|null;replayed:boolean;
+}
+export interface InfraFrontierDelegateAction {
+  requestId:string;state:string;workerSignal?:string|null;mergeSha?:string|null;
 }
 export interface InfraProvenance {
   project_id:string;stages:string[];chains:InfraEvidenceChain[];
