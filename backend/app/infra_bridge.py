@@ -20,7 +20,7 @@ from infra.sessions import Session, SessionRegistry
 from infra.memory import MemoryStore
 from infra.project_bank import Bank
 from infra.consistency import ConsistencyStore
-from infra.scheduler import Scheduler
+from infra.scheduler import Scheduler, SessionMeta
 from infra.history import HistoryStore
 from infra.continuity import ContinuityStore
 from infra.mcp import McpRegistry
@@ -102,7 +102,7 @@ class InfraBridge:
             for row in self.store.conn.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at").fetchall():
                 agent=self.store.obj("agent",row["agent_id"]) if row["agent_id"] else None
                 if agent:
-                    self.enqueue_job(agent,row["project_id"],int(row["priority"]))
+                    self.enqueue_job(agent,row["project_id"],int(row["priority"]),job_id=row["id"])
 
     def sync_change(self, source: str, kind: str, body: dict, project_id=None, task_id=None) -> None:
         if kind == "project":
@@ -241,23 +241,28 @@ class InfraBridge:
         for row in self.store.conn.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at").fetchall():
             agent=self.store.obj("agent",row["agent_id"]) if row["agent_id"] else None
             if agent:
-                self.enqueue_job(agent,row["project_id"],int(row["priority"]))
+                self.enqueue_job(agent,row["project_id"],int(row["priority"]),job_id=row["id"])
 
-    def enqueue_job(self, agent: dict, project_id: str, priority: int) -> None:
-        """Persist scheduler ownership in the same transaction as the compatibility job."""
+    def enqueue_job(self, agent: dict, project_id: str, priority: int, *, job_id: str) -> None:
+        """Persist scheduler ownership in the same transaction as the compatibility job.
+
+        The job id is the stable idempotency boundary, so startup reconciliation can
+        safely enqueue the same queued job again without duplicating domain events.
+        """
         sid=agent.get("sessionId")
         if not sid:
             raise ValueError("agent has no persistent session")
         scheduler=Scheduler.from_connection(self.store.conn)
         scheduler.enqueue(
-            __import__("infra.scheduler",fromlist=["SessionMeta"]).SessionMeta(
+            SessionMeta(
                 sid,project_id,priority=max(-100,min(int(priority),100)),task_state="RUNNABLE"
             ),
             now=int(time.time()),
         )
         scheduler.save_in_connection(self.store.conn)
-        self._append(project_id,"SESSION_QUEUED",{"session_id":sid,"priority":int(priority)},
-                     actor_id="scheduler",idempotency_key=self._key(f"compat:session:{sid}:queued",{"priority":int(priority),"at":time.time_ns()}))
+        self._append(project_id,"SESSION_QUEUED",
+                     {"session_id":sid,"priority":int(priority),"job_id":job_id},
+                     actor_id="scheduler",idempotency_key=f"compat:job:{job_id}:queued")
 
     def claim_next_job(self):
         """Select a queued execution with the migrated scheduler under the caller transaction."""
