@@ -17,6 +17,7 @@ from .storage import Store, ident, now
 from .security import COOKIE, login as login_cookie, login_with_token, current_principal, permission_for_request, resolve_project_scope
 from .executor import OpenAIExecutor
 from .common import logged_in
+from .infra_bridge import InfraBridge
 
 
 def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:str|None=None, secret:str|None=None, admin_token:str|None=None, executor:OpenAIExecutor|None=None) -> FastAPI:
@@ -28,7 +29,9 @@ def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:st
         raise RuntimeError('Set MRLC_ADMIN_PASSWORD (>=12 chars) and MRLC_SESSION_SECRET (>=32 chars) in the backend environment')
     if configured_admin_token and len(configured_admin_token)<24:
         raise RuntimeError('MRLC_ADMIN_TOKEN must contain at least 24 characters when configured')
-    store=Store(db_path or os.getenv('MRLC_DB_PATH','./var/mrlc.sqlite3'))
+    database_path=db_path or os.getenv('MRLC_DB_PATH','./var/mrlc.sqlite3')
+    store=Store(database_path)
+    infra=InfraBridge(store,database_path,scheduler_capacity=max(1,min(int(os.getenv('MRLC_MAX_CONCURRENT_JOBS','2')),8)))
     runtime=executor or OpenAIExecutor()
     # Bootstrap the configured administrator identity on a new database. The password
     # itself stays in the environment: no password material is ever written to SQLite
@@ -68,6 +71,7 @@ def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:st
 
     api=FastAPI(title='MRLC Backend API',version='0.8.1',lifespan=lifespan)
     api.state.store=store
+    api.state.infra=infra
     api.state.password=passwd
     api.state.admin_username=admin_username
     api.state.admin_token=configured_admin_token
@@ -145,13 +149,15 @@ def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:st
 
     @api.get('/api/v1/capabilities')
     def capabilities(_:Any=Depends(logged_in)):
-        return {'backend':'sqlite','databaseDurable':True,'modelExecutorConfigured':runtime.available,
+        return {'backend':'sqlite+infra-core','databaseDurable':True,'modelExecutorConfigured':runtime.available,
                 'agentCheckpointSupported':False,'physicalGpuControlSupported':False,
                 'taskDispatchSupported':runtime.available,'simulatedMetrics':False,
-                'authorizationMode':'rbac','version':'0.8.1'}
+                'infraCoreMigrated':True,'domainEventReplay':True,'consistencyPrimitives':True,
+                'memoryBankAvailable':True,'projectionCompatibility':True,
+                'authorizationMode':'rbac','version':'0.9.0-infra'}
 
-    from . import routes_auth,routes_organization,routes_workspace,routes_artifacts,routes_approvals,routes_runtime,routes_system,routes_coordination
-    for routes in (routes_auth,routes_organization,routes_workspace,routes_artifacts,routes_approvals,routes_runtime,routes_system,routes_coordination):
+    from . import routes_auth,routes_organization,routes_workspace,routes_artifacts,routes_approvals,routes_runtime,routes_system,routes_coordination,routes_infra
+    for routes in (routes_auth,routes_organization,routes_workspace,routes_artifacts,routes_approvals,routes_runtime,routes_system,routes_coordination,routes_infra):
         routes.register(api,store,runtime)
 
     static_directory=os.getenv('MRLC_STATIC_DIR','').strip()

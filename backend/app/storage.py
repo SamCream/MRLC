@@ -31,10 +31,12 @@ class Store:
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.lock = threading.RLock()
+        self.infra_bridge = None
         with self.lock:
             self.conn.execute('PRAGMA journal_mode=WAL')
             self.conn.execute('PRAGMA foreign_keys=ON')
             self.conn.execute('PRAGMA busy_timeout=5000')
+            self._migrate_legacy_ui_events()
             self.conn.executescript('''
                 CREATE TABLE IF NOT EXISTS objects (
                     kind TEXT NOT NULL, id TEXT NOT NULL, project_id TEXT,
@@ -53,7 +55,7 @@ class Store:
                     project_id TEXT, task_id TEXT, trace_id TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_audit_project ON audit(project_id,seq);
-                CREATE TABLE IF NOT EXISTS events (
+                CREATE TABLE IF NOT EXISTS ui_events (
                     seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
                     occurred_at TEXT NOT NULL, type TEXT NOT NULL,
                     project_id TEXT, payload TEXT NOT NULL
@@ -78,6 +80,32 @@ class Store:
             self._ensure_column('audit','entry_hash','TEXT')
             self._ensure_column('audit','actor_id','TEXT')
 
+
+    def _migrate_legacy_ui_events(self):
+        """Free the canonical `events` table name for the migrated Infra EventStore.
+
+        Phase 8 used an incompatible UI/SSE event schema under `events`. Existing
+        databases are migrated in-place to `ui_events`; new databases create only
+        `ui_events`, allowing the authoritative Infra EventStore to own `events`.
+        """
+        rows=self.conn.execute("PRAGMA table_info(events)").fetchall()
+        if not rows:
+            return
+        columns={row['name'] for row in rows}
+        legacy={'seq','id','occurred_at','type','project_id','payload'}
+        if not legacy.issubset(columns) or 'event_id' in columns:
+            return
+        ui_exists=bool(self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ui_events'"
+        ).fetchone())
+        if not ui_exists:
+            self.conn.execute('ALTER TABLE events RENAME TO ui_events')
+            return
+        self.conn.execute(
+            "INSERT OR IGNORE INTO ui_events(seq,id,occurred_at,type,project_id,payload) "
+            "SELECT seq,id,occurred_at,type,project_id,payload FROM events"
+        )
+        self.conn.execute('DROP TABLE events')
 
     def _ensure_column(self, table:str, column:str, declaration:str):
         cols={row['name'] for row in self.conn.execute(f'PRAGMA table_info({table})').fetchall()}
@@ -137,11 +165,13 @@ class Store:
     def emit(self, event_type: str, project_id=None, payload=None):
         event = dict(id=ident('evt'), type=event_type, projectId=project_id,
                      occurredAt=now(), payload=payload or {})
-        self.execute('INSERT INTO events(id,occurred_at,type,project_id,payload) VALUES(?,?,?,?,?)',
+        self.execute('INSERT INTO ui_events(id,occurred_at,type,project_id,payload) VALUES(?,?,?,?,?)',
                      (event['id'], event['occurredAt'], event_type, project_id, jdump(event['payload'])))
         return event
 
     def change(self, source: str, kind: str, body: dict, project_id=None, task_id=None):
+        if self.infra_bridge is not None:
+            self.infra_bridge.sync_change(source, kind, body, project_id, task_id)
         self.put(kind, body, project_id)
         self.audit(source, f'{kind} {body["id"]} updated', project_id, task_id)
         self.emit(f'{kind}.changed', project_id, {'id': body['id']})
@@ -166,7 +196,7 @@ class Store:
         return {'items':entries,'nextCursor':str(rows[limit-1]['seq']) if len(rows)>limit else None}
 
     def events_after(self, seq: int, limit=100):
-        rows=self.execute('SELECT * FROM events WHERE seq>? ORDER BY seq LIMIT ?', (seq, limit)).fetchall()
+        rows=self.execute('SELECT * FROM ui_events WHERE seq>? ORDER BY seq LIMIT ?', (seq, limit)).fetchall()
         return [(r['seq'],dict(id=r['id'],type=r['type'],projectId=r['project_id'],occurredAt=r['occurred_at'],payload=json.loads(r['payload']))) for r in rows]
 
     def close(self):
