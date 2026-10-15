@@ -1,3 +1,12 @@
+"""Legacy Dev conversation runtime retained for migration/reference only.
+
+The product authority is now backend/app/routes_workspace.py + routes_runtime.py:
+channel/message objects, chat_response_groups, jobs, Scheduler and knowledge-readiness
+constraints form one typed FastAPI workflow. Do not instantiate ConversationService in
+the FastAPI startup path without an explicit data migration; it owns separate
+conversation_* tables and would create a competing conversation source of truth.
+"""
+
 from __future__ import annotations
 
 import json
