@@ -400,6 +400,169 @@ class InfraBridge:
                      actor_id="scheduler",idempotency_key=f"compat:job:{job['id']}:lease-expired",
                      task_id=job["target_id"] if job["kind"]=="task" else None)
 
+    def mark_chat_response_running(self, job_id: str) -> None:
+        member=self.store.execute(
+            "SELECT group_id FROM chat_response_members WHERE job_id=?",(job_id,)
+        ).fetchone()
+        if member is None:
+            return
+        self.store.conn.execute(
+            "UPDATE chat_response_members SET status='RUNNING' WHERE job_id=?",(job_id,)
+        )
+        self.store.conn.execute(
+            "UPDATE chat_response_groups SET status='RUNNING' WHERE id=?",
+            (member["group_id"],),
+        )
+
+    def advance_chat_response_group(self, job_id: str, terminal_status: str) -> None:
+        """Advance a multi-role reply group strictly one member at a time.
+
+        This method is called inside the caller's Store transaction after a chat job becomes
+        terminal. Waiting members are not present in Scheduler until their predecessor ends,
+        so responseMode=multi is serialized by construction rather than by timing luck.
+        """
+        member=self.store.execute(
+            "SELECT group_id,sequence FROM chat_response_members WHERE job_id=?",(job_id,)
+        ).fetchone()
+        if member is None:
+            return
+        terminal=terminal_status.upper()
+        self.store.conn.execute(
+            "UPDATE chat_response_members SET status=? WHERE job_id=?",(terminal,job_id)
+        )
+        group_id=member["group_id"]
+        active=self.store.execute(
+            "SELECT 1 FROM chat_response_members m JOIN jobs j ON j.id=m.job_id "
+            "WHERE m.group_id=? AND j.status IN ('queued','running') LIMIT 1",
+            (group_id,),
+        ).fetchone()
+        if active is not None:
+            return
+
+        while True:
+            waiting=self.store.execute(
+                "SELECT m.job_id,m.agent_id,j.project_id,j.priority FROM chat_response_members m "
+                "JOIN jobs j ON j.id=m.job_id WHERE m.group_id=? AND j.status='waiting' "
+                "ORDER BY m.sequence LIMIT 1",(group_id,),
+            ).fetchone()
+            if waiting is None:
+                break
+            agent=self.store.obj("agent",waiting["agent_id"])
+            role=self.store.obj("role",agent.get("roleTemplateId")) if agent else None
+            competing=self.store.execute(
+                "SELECT 1 FROM jobs WHERE agent_id=? AND id<>? "
+                "AND status IN ('queued','running','waiting') LIMIT 1",
+                (waiting["agent_id"],waiting["job_id"]),
+            ).fetchone()
+            if (
+                agent is None or agent.get("projectId")!=waiting["project_id"]
+                or agent.get("status")!="idle"
+                or role is None or role.get("lifecycle")!="active"
+                or "messages.reply" not in role.get("allowedPermissions",[])
+                or competing is not None
+            ):
+                self.store.conn.execute(
+                    "UPDATE jobs SET status='failed',error=?,completed_at=? WHERE id=?",
+                    ("Reserved responder became unavailable before its serial turn",
+                     datetime.now(timezone.utc).isoformat(),waiting["job_id"]),
+                )
+                self.store.conn.execute(
+                    "UPDATE chat_response_members SET status='FAILED' WHERE job_id=?",
+                    (waiting["job_id"],),
+                )
+                continue
+            self.store.conn.execute(
+                "UPDATE jobs SET status='queued' WHERE id=?",(waiting["job_id"],)
+            )
+            self.store.conn.execute(
+                "UPDATE chat_response_members SET status='QUEUED' WHERE job_id=?",
+                (waiting["job_id"],),
+            )
+            self.enqueue_job(
+                agent,waiting["project_id"],int(waiting["priority"]),job_id=waiting["job_id"]
+            )
+            self.store.emit(
+                "chat.response.member.queued",waiting["project_id"],
+                {"groupId":group_id,"jobId":waiting["job_id"],"agentId":waiting["agent_id"]},
+            )
+            return
+
+        states=[
+            str(row["status"]) for row in self.store.execute(
+                "SELECT status FROM chat_response_members WHERE group_id=? ORDER BY sequence",
+                (group_id,),
+            ).fetchall()
+        ]
+        group_state=(
+            "COMPLETED" if states and all(state=="COMPLETED" for state in states)
+            else "COMPLETED_WITH_ERRORS"
+        )
+        self.store.conn.execute(
+            "UPDATE chat_response_groups SET status=?,completed_at=? WHERE id=?",
+            (group_state,datetime.now(timezone.utc).isoformat(),group_id),
+        )
+        row=self.store.execute(
+            "SELECT project_id FROM chat_response_groups WHERE id=?",(group_id,)
+        ).fetchone()
+        if row is not None:
+            self.store.emit(
+                "chat.response.group.completed",row["project_id"],
+                {"groupId":group_id,"status":group_state},
+            )
+
+    def assess_knowledge_readiness(
+        self, *, project_id: str, task_id: str|None, explicit_artifact_ids: list[str],
+        memory_source_refs: list[str], job_id: str, role_id: str,
+    ) -> dict[str, Any]:
+        """Produce a conservative, evidence-derived readiness claim for one response."""
+        verified=[]
+        criteria=[]
+        if task_id:
+            task=self.store.obj("task",task_id)
+            if task is None or task.get("projectId")!=project_id:
+                raise ValueError("knowledge-readiness task is outside the response project")
+            criteria=list(task.get("acceptanceCriteria") or [])
+            for criterion in criteria:
+                if not criterion.get("satisfied"):
+                    continue
+                for artifact_id in criterion.get("evidenceArtifactIds",[]) or []:
+                    artifact=self.store.obj("artifact",artifact_id)
+                    if artifact and artifact.get("projectId")==project_id and artifact.get("contentAvailable"):
+                        verified.append(artifact_id)
+        explicit=[]
+        for artifact_id in explicit_artifact_ids:
+            artifact=self.store.obj("artifact",artifact_id)
+            if artifact and artifact.get("projectId")==project_id and artifact.get("contentAvailable"):
+                explicit.append(artifact_id)
+        verified=list(dict.fromkeys(verified))
+        explicit=list(dict.fromkeys(explicit))
+        memory=list(dict.fromkeys(memory_source_refs))
+        if task_id and criteria and all(bool(item.get("satisfied")) for item in criteria) and verified:
+            status="KNOWN"
+            reason="All scoped task acceptance criteria are server-verified with available evidence."
+        elif verified or explicit or memory:
+            status="PARTIAL"
+            reason="Some project evidence or evidence-backed Memory is available, but completeness is not verified."
+        else:
+            status="UNKNOWN"
+            reason="No server-verified task evidence, explicit artifact evidence, or retrieved durable Memory supports this response."
+        payload={
+            "status":status,"reason":reason,"task_id":task_id,"role_id":role_id,
+            "verified_artifact_ids":verified,"explicit_artifact_ids":explicit,
+            "memory_source_refs":memory,
+        }
+        self._append(
+            project_id,"KNOWLEDGE_READINESS_ASSESSED",payload,
+            actor_id="context-assembler",
+            idempotency_key=f"knowledge-readiness:{job_id}",
+            task_id=task_id,
+        )
+        return {
+            "status":status,"reason":reason,
+            "evidenceArtifactIds":list(dict.fromkeys(verified+explicit)),
+            "memorySourceRefs":memory,
+        }
+
     def assemble_runtime_context(
         self, *, project_id: str, role_id: str, query: str, job_id: str,
         profile_id: str="runtime", token_budget: int=1200,
