@@ -101,7 +101,7 @@ def register(api,store:Store,runtime):
             priority=max(0,min(int(t.get('priorityValue',50)),100))
             store.execute('INSERT INTO jobs(id,kind,project_id,target_id,agent_id,status,created_at,priority,max_attempts,context_id) VALUES(?,?,?,?,?,?,?,?,?,?)',
                           (job['id'],'task',job['project_id'],job['target_id'],job['agent_id'],'queued',now(),priority,2,snapshot['id']))
-            core.enqueue_job(agent,t['projectId'],priority)
+            core.enqueue_job(agent,t['projectId'],priority,job_id=job['id'])
             t['status']='queued';t['assigneeAgentId']=agent['id'];t['updatedAt']=now()
             event_and_audit(store,'scheduler','task',t,t['projectId'],task_id)
             return {'jobId':job['id'],'status':'queued'}
@@ -147,7 +147,7 @@ def register(api,store:Store,runtime):
             store.put('contextSnapshot',snapshot,c['projectId'])
             store.execute('INSERT INTO jobs(id,kind,project_id,target_id,agent_id,status,created_at,priority,max_attempts,context_id) VALUES(?,?,?,?,?,?,?,?,?,?)',
                           (job_id,'chat',c['projectId'],channel_id,agent['id'],'queued',now(),60,2,snapshot['id']))
-            core.enqueue_job(agent,c['projectId'],60)
+            core.enqueue_job(agent,c['projectId'],60,job_id=job_id)
             store.audit('scheduler',f'Agent response queued {job_id}',c['projectId'])
             store.emit('job.queued',c['projectId'],{'id':job_id})
             return {'jobId':job_id,'status':'queued'}
@@ -182,7 +182,7 @@ def register(api,store:Store,runtime):
             store.execute('INSERT INTO jobs(id,kind,project_id,target_id,agent_id,status,created_at,priority,attempt,max_attempts,context_id,parent_job_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
                           (new_id,row['kind'],row['project_id'],row['target_id'],row['agent_id'],'queued',now(),row['priority'],int(row['attempt'])+1,row['max_attempts'],row['context_id'],job_id))
             retry_agent=obj_or_404(store,'agent',row['agent_id'])
-            core.enqueue_job(retry_agent,row['project_id'],int(row['priority']))
+            core.enqueue_job(retry_agent,row['project_id'],int(row['priority']),job_id=new_id)
             if row['kind']=='task':
                 task=store.obj('task',row['target_id'])
                 if task:task['status']='queued';task['updatedAt']=now();store.change('scheduler','task',task,row['project_id'],task['id'])
