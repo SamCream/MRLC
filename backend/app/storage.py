@@ -143,6 +143,22 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS idx_frontier_delegate_project
                     ON frontier_delegate_operations(project_id,created_at);
+                CREATE TABLE IF NOT EXISTS chat_response_groups (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+                    user_message_id TEXT NOT NULL, response_mode TEXT NOT NULL,
+                    status TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_chat_response_groups_channel
+                    ON chat_response_groups(channel_id,created_at);
+                CREATE TABLE IF NOT EXISTS chat_response_members (
+                    group_id TEXT NOT NULL, sequence INTEGER NOT NULL,
+                    agent_id TEXT NOT NULL, job_id TEXT NOT NULL UNIQUE,
+                    route_reason TEXT NOT NULL, status TEXT NOT NULL,
+                    PRIMARY KEY(group_id,sequence),
+                    FOREIGN KEY(group_id) REFERENCES chat_response_groups(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_chat_response_members_job
+                    ON chat_response_members(job_id);
             ''')
             # Lightweight in-place migrations for Phase 8 runtime/audit fields.
             self._ensure_column('jobs','priority','INTEGER NOT NULL DEFAULT 50')
