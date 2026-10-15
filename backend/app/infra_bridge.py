@@ -33,6 +33,7 @@ from infra.model_gateway import ModelGateway, ModelResult
 from infra.replay import replay_project
 from infra.context.bundle import ContextAssembler, ContextCandidate
 from infra.retrieval.pipeline import RetrievalPipeline, RetrievalDocument
+from infra.a2cm_plugin import A2CMPlugin, Observation
 from infra.frontier import (
     FrontierAdvisorUnavailable, FrontierMode, FrontierPolicy, FrontierRequest, FrontierService,
 )
@@ -77,6 +78,7 @@ class InfraBridge:
         self.model_gateway = ModelGateway({}, database_path=database_path)
         self.context_assembler = ContextAssembler()
         self.retrieval = RetrievalPipeline()
+        self.a2cm=A2CMPlugin(database_path)
         frontier_budget=max(1,int(os.getenv("MRLC_FRONTIER_BUDGET","1000") or 1000))
         self.frontier_advisor=(
             FrontierAdvisor(gateway=self.model_gateway) if os.getenv("CCR_API_KEY") else None
@@ -619,6 +621,147 @@ class InfraBridge:
             actor_id=decision.authority,
             idempotency_key=f"decision:{decision.decision_id}:recorded",
         )
+
+    def a2cm_snapshot(self, project_id: str) -> dict[str, Any]:
+        rows=self.store.execute(
+            "SELECT candidate_id,actor_id,statement,evidence_refs_json,confidence,status,"
+            "reviewer,policy_version,counterevidence_json,uncertainty_json "
+            "FROM a2cm_candidates WHERE project_id=? ORDER BY rowid DESC LIMIT 200",
+            (project_id,),
+        ).fetchall()
+        candidates=[]
+        for row in rows:
+            candidates.append({
+                "candidateId":row["candidate_id"],"actorId":row["actor_id"],
+                "statement":row["statement"],
+                "evidenceRefs":json.loads(row["evidence_refs_json"] or "[]"),
+                "confidence":float(row["confidence"]),"status":row["status"],
+                "reviewer":row["reviewer"],"policyVersion":row["policy_version"],
+                "counterevidence":json.loads(row["counterevidence_json"] or "[]"),
+                "uncertainty":json.loads(row["uncertainty_json"] or "[]"),
+            })
+        primary=[
+            {"sessionId":row["session_id"],"lifecycle":row["lifecycle"]}
+            for row in self.store.execute(
+                "SELECT session_id,lifecycle FROM sessions WHERE project_id=? "
+                "AND application_id='a2cm' AND role_id='a2cm.primary' ORDER BY rowid DESC",
+                (project_id,),
+            ).fetchall()
+        ]
+        active=next((item for item in primary if item["lifecycle"]=="ACTIVE"),None)
+        return {
+            "capabilities":{
+                "review":{
+                    "available":active is not None,
+                    "reason":None if active is not None
+                             else "No ACTIVE a2cm.primary session exists for this project.",
+                }
+            },
+            "primarySessions":primary,"activePrimarySessionId":None if active is None else active["sessionId"],
+            "candidates":candidates,
+        }
+
+    def ensure_a2cm_primary(self, project_id: str, *, actor_id: str) -> dict[str, Any]:
+        existing=self.store.execute(
+            "SELECT session_id,lifecycle FROM sessions WHERE project_id=? "
+            "AND application_id='a2cm' AND role_id='a2cm.primary' AND lifecycle='ACTIVE' "
+            "ORDER BY rowid DESC LIMIT 1",(project_id,),
+        ).fetchone()
+        if existing is not None:
+            return {"sessionId":existing["session_id"],"lifecycle":existing["lifecycle"],"created":False}
+        session=Session(
+            f"ses_{uuid4().hex}",project_id,"a2cm","a2cm.primary",
+            runtime_adapter="policy-review",model_binding="none",
+        )
+        self.sessions.create_in_connection(self.store.conn,session)
+        self._append(
+            project_id,"SESSION_CREATED",
+            {"session_id":session.session_id,"application_id":"a2cm","role_id":"a2cm.primary"},
+            actor_id=actor_id,idempotency_key=f"a2cm-primary:{project_id}:{session.session_id}",
+        )
+        self.store.emit("infra.a2cm.primary.created",project_id,{"sessionId":session.session_id})
+        return {"sessionId":session.session_id,"lifecycle":"ACTIVE","created":True}
+
+    def record_a2cm_observation(
+        self, *, project_id: str, actor_id: str, content: str,
+        evidence_event_id: str, confidence: float, source: str,
+    ) -> dict[str, Any]:
+        if not 0.0<=confidence<=1.0:
+            raise ValueError("confidence must be between 0 and 1")
+        if self.store.execute(
+            "SELECT 1 FROM events WHERE project_id=? AND event_id=?",
+            (project_id,evidence_event_id),
+        ).fetchone() is None:
+            raise ValueError("evidenceEventId must reference this project's Domain EventStore")
+        observation=Observation(
+            observation_id=uuid4().hex,
+            actor_id=actor_id,
+            content=content.strip(),
+            evidence_ref="event:"+evidence_event_id,
+            confidence=confidence,
+        )
+        if not observation.content:
+            raise ValueError("observation content must not be empty")
+        candidate=A2CMPlugin.observe_in_connection(
+            self.store.conn,observation,source,project_id=project_id
+        )
+        self._append(
+            project_id,"BELIEF_CANDIDATE_CREATED",
+            {"candidate_id":candidate.candidate_id,"status":candidate.status,
+             "confidence":candidate.confidence,"evidence_refs":list(candidate.evidence_refs),
+             "source":source},
+            actor_id=actor_id,
+            idempotency_key=f"a2cm-candidate:{candidate.candidate_id}:created",
+        )
+        self.store.emit(
+            "infra.a2cm.candidate.created",project_id,{"candidateId":candidate.candidate_id}
+        )
+        return {
+            "candidateId":candidate.candidate_id,"actorId":candidate.actor_id,
+            "statement":candidate.statement,"evidenceRefs":list(candidate.evidence_refs),
+            "confidence":candidate.confidence,"status":candidate.status,
+            "reviewer":None,"policyVersion":None,"counterevidence":[],"uncertainty":[],
+        }
+
+    def review_a2cm_candidate(
+        self, *, project_id: str, candidate_id: str, primary_session_id: str,
+        decision: str, policy_version: str, counterevidence: tuple[str,...],
+        uncertainty: tuple[str,...], rationale: str, actor_id: str,
+    ) -> dict[str, Any]:
+        primary=self.store.execute(
+            "SELECT project_id,application_id,role_id,lifecycle FROM sessions WHERE session_id=?",
+            (primary_session_id,),
+        ).fetchone()
+        if primary is None or primary["project_id"]!=project_id:
+            raise PermissionError("Primary session must belong to this project")
+        if (primary["application_id"],primary["role_id"])!=("a2cm","a2cm.primary"):
+            raise PermissionError("review requires an a2cm.primary session")
+        if primary["lifecycle"]!="ACTIVE":
+            raise ValueError("a2cm.primary session is not ACTIVE")
+        if not rationale.strip():
+            raise ValueError("rationale must not be empty")
+        reviewed=A2CMPlugin.review_in_connection(
+            self.store.conn,project_id,candidate_id,decision,
+            policy_version=policy_version,counterevidence=counterevidence,
+            uncertainty=uncertainty,
+        )
+        reviewed["primary_session_id"]=primary_session_id
+        reviewed["rationale"]=rationale.strip()[:4000]
+        self._append(
+            project_id,"BELIEF_CANDIDATE_REVIEWED",reviewed,
+            actor_id=actor_id,
+            idempotency_key=self._key(
+                f"a2cm-review:{candidate_id}",
+                {"decision":decision,"policy":policy_version,
+                 "counterevidence":counterevidence,"uncertainty":uncertainty,
+                 "rationale":rationale.strip()},
+            ),
+        )
+        self.store.emit(
+            "infra.a2cm.candidate.reviewed",project_id,
+            {"candidateId":candidate_id,"status":reviewed["status"]},
+        )
+        return reviewed
 
     def frontier_snapshot(self, project_id: str) -> dict[str, Any]:
         requests=[
