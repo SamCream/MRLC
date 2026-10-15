@@ -272,7 +272,7 @@ def test_backend_routes_and_serializes_multi_role_replies_with_unknown_readiness
             'name':'engineering','purpose':'implementation review','contextPolicy':'relevant'
         }).json()['id']
         sent=c.post(f'/api/v1/channels/{channel}/messages',json={
-            'content':'Please implement the code, then review and critique the result.',
+            'content':'Please implement and debug the code, then review the result.',
             'responseMode':'multi',
         })
         assert sent.status_code==201,sent.text
@@ -312,6 +312,65 @@ def test_backend_routes_and_serializes_multi_role_replies_with_unknown_readiness
         assert {item['knowledgeReadiness'] for item in grouped}=={'UNKNOWN'}
         domain=[event['type'] for event in c.get(f'/api/v1/projects/{pid}/infra/events').json()['items']]
         assert domain.count('KNOWLEDGE_READINESS_ASSESSED')==2
+
+
+
+
+def test_task_scoped_verified_attachment_produces_known_readiness(tmp_path):
+    executor=SerialProbeExecutor()
+    app=create_app(
+        db_path=str(tmp_path/'known-chat.sqlite'),artifact_dir=str(tmp_path/'files'),
+        password=PASSWORD,secret=SECRET,executor=executor,
+    )
+    with TestClient(app) as c:
+        c.post('/api/v1/auth/login',json={'password':PASSWORD})
+        pid=add_project(c,'Known readiness')
+        rid=add_role(c);aid=add_agent(c,pid,rid)
+        task=add_task(c,pid,rid,criteria=[{'description':'Verified proof evidence'}])
+        artifact=c.post(
+            f'/api/v1/projects/{pid}/artifacts',
+            data={'taskId':task['id']},
+            files={'file':('proof.txt',b'proof evidence bytes','text/plain')},
+        )
+        assert artifact.status_code==201,artifact.text
+        art=artifact.json()
+        criterion=task['acceptanceCriteria'][0]['id']
+        verified=c.post(
+            f'/api/v1/tasks/{task["id"]}/criteria/{criterion}/verify',
+            json={'evidenceArtifactIds':[art['id']]},
+        )
+        assert verified.status_code==200,verified.text
+        channel=c.post(f'/api/v1/projects/{pid}/channels',json={
+            'name':'task-context','purpose':'task evidence','contextPolicy':'task'
+        }).json()['id']
+        sent=c.post(f'/api/v1/channels/{channel}/messages',json={
+            'content':'Summarize only what the verified proof supports.',
+            'responseMode':'single','artifactIds':[art['id']],
+        })
+        assert sent.status_code==201,sent.text
+
+        dispatch=c.post(f'/api/v1/channels/{channel}/respond',json={
+            'agentId':aid,'taskId':task['id'],
+        })
+        assert dispatch.status_code==202,dispatch.text
+        job_id=dispatch.json()['jobId']
+        deadline=time.monotonic()+6
+        while time.monotonic()<deadline:
+            row=next(item for item in c.get('/api/v1/runtime/jobs').json()['items']
+                     if item['id']==job_id)
+            if row['status'] in {'completed','failed','cancelled'}:
+                break
+            time.sleep(.05)
+        assert row['status']=='completed',row
+        assert executor.calls and 'Knowledge readiness is KNOWN' in executor.calls[0]['system']
+        reply=c.get(f'/api/v1/channels/{channel}/messages').json()['items'][-1]
+        assert reply['knowledgeReadiness']=='KNOWN'
+        assert 'All scoped task acceptance criteria' in reply['knowledgeReadinessReason']
+        ctx=c.get(f'/api/v1/runtime/jobs/{job_id}/context').json()
+        assert ctx['knowledgeReadiness']=='KNOWN'
+        assert art['id'] in ctx['knowledgeEvidenceArtifactIds']
+        # Message attachment was propagated automatically; /respond did not repeat artifactIds.
+        assert art['id'] in ctx['artifactIds']
 
 
 def test_explicit_role_mention_beats_responsibility_routing(tmp_path):
