@@ -287,6 +287,9 @@ class Store:
         for key, column in [('projectId', 'project_id'), ('taskId', 'task_id'), ('level','level'), ('source','source'), ('traceId','trace_id')]:
             if filters.get(key): clauses.append(f'{column}=?');args.append(filters[key])
         if filters.get('q'):clauses.append('message LIKE ?');args.append('%'+str(filters['q'])+'%')
+        if filters.get('resourceId'):
+            clauses.append('(task_id=? OR message LIKE ?)')
+            args.extend([str(filters['resourceId']),'%'+str(filters['resourceId'])+'%'])
         if filters.get('since'):clauses.append('timestamp>=?');args.append(filters['since'])
         if filters.get('until'):clauses.append('timestamp<=?');args.append(filters['until'])
         if filters.get('cursor'):
