@@ -47,36 +47,49 @@ class MemoryStore:
                 "PRIMARY KEY (memory_id, evidence_id))"
             )
 
-    def put(self, item: MemoryItem, evidence: tuple[EvidenceItem, ...]) -> None:
+    @staticmethod
+    def _validate(item: MemoryItem, evidence: tuple[EvidenceItem, ...]) -> None:
         if not item.source_event_refs:
             raise ValueError("memory requires at least one source event")
         if not evidence:
             raise ValueError("memory requires supporting evidence")
         if not 0.0 <= item.confidence <= 1.0:
             raise ValueError("memory confidence must be between zero and one")
+        if any(not 0.0 <= entry.confidence <= 1.0 for entry in evidence):
+            raise ValueError("memory evidence confidence must be between zero and one")
+
+    def put(self, item: MemoryItem, evidence: tuple[EvidenceItem, ...]) -> None:
         with sqlite3.connect(self._database_path) as connection:
-            connection.execute(
-                "INSERT OR REPLACE INTO memories "
-                "(memory_id, project_id, role_scope, kind, content, source_event_refs, valid_from, valid_to, confidence, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    item.memory_id,
-                    item.project_id,
-                    item.role_scope,
-                    item.kind,
-                    item.content,
-                    json.dumps(item.source_event_refs),
-                    item.valid_from.isoformat(),
-                    item.valid_to.isoformat() if item.valid_to else None,
-                    item.confidence,
-                    item.status,
-                ),
-            )
-            connection.executemany(
-                "INSERT OR REPLACE INTO memory_evidence "
-                "(memory_id, evidence_id, event_id, stance, source_ref, confidence) VALUES (?, ?, ?, ?, ?, ?)",
-                [(item.memory_id, e.evidence_id, e.event_id, e.stance, e.source_ref, e.confidence) for e in evidence],
-            )
+            self.put_in_connection(connection,item,evidence)
+
+    def put_in_connection(
+        self, connection: sqlite3.Connection, item: MemoryItem,
+        evidence: tuple[EvidenceItem, ...],
+    ) -> None:
+        """Transactional variant used by Evented application layers."""
+        self._validate(item,evidence)
+        connection.execute(
+            "INSERT OR REPLACE INTO memories "
+            "(memory_id, project_id, role_scope, kind, content, source_event_refs, valid_from, valid_to, confidence, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                item.memory_id,
+                item.project_id,
+                item.role_scope,
+                item.kind,
+                item.content,
+                json.dumps(item.source_event_refs),
+                item.valid_from.isoformat(),
+                item.valid_to.isoformat() if item.valid_to else None,
+                item.confidence,
+                item.status,
+            ),
+        )
+        connection.executemany(
+            "INSERT OR REPLACE INTO memory_evidence "
+            "(memory_id, evidence_id, event_id, stance, source_ref, confidence) VALUES (?, ?, ?, ?, ?, ?)",
+            [(item.memory_id, e.evidence_id, e.event_id, e.stance, e.source_ref, e.confidence) for e in evidence],
+        )
 
     def get(self, project_id: str, memory_id: str) -> MemoryItem:
         with sqlite3.connect(self._database_path) as connection:
@@ -116,12 +129,28 @@ class MemoryStore:
         return [self._from_row(row) for row in rows]
 
     def supersede(self, project_id: str, old_memory_id: str, new_memory_id: str) -> None:
-        old = self.get(project_id, old_memory_id)
-        self.get(project_id, new_memory_id)
         with sqlite3.connect(self._database_path) as connection:
-            connection.execute(
-                "UPDATE memories SET status = 'superseded' WHERE memory_id = ?", (old.memory_id,)
-            )
+            self.supersede_in_connection(connection,project_id,old_memory_id,new_memory_id)
+
+    def supersede_in_connection(
+        self, connection: sqlite3.Connection, project_id: str,
+        old_memory_id: str, new_memory_id: str,
+    ) -> None:
+        old=connection.execute(
+            "SELECT project_id,status FROM memories WHERE memory_id=?",(old_memory_id,)
+        ).fetchone()
+        new=connection.execute(
+            "SELECT project_id FROM memories WHERE memory_id=?",(new_memory_id,)
+        ).fetchone()
+        if old is None:
+            raise KeyError(f"unknown memory: {old_memory_id}")
+        if new is None:
+            raise KeyError(f"unknown memory: {new_memory_id}")
+        if old[0] != project_id or new[0] != project_id:
+            raise PermissionError("memory access crosses project boundary")
+        connection.execute(
+            "UPDATE memories SET status='superseded' WHERE memory_id=?",(old_memory_id,)
+        )
 
     @staticmethod
     def _from_row(row: tuple[object, ...]) -> MemoryItem:
