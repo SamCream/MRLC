@@ -16,8 +16,8 @@ The current backend keeps the existing Control Room React/FastAPI contract while
 10. **Memory / runtime context** — evidence-backed, role/project-scoped, temporal Memory and deterministic retrieval are migrated **and consumed by real task/chat provider calls**. Every assembly persists included/excluded sources, token budget and a `CONTEXT_ASSEMBLED` domain event; ordinary chat is still not silently promoted into long-term memory.
 11. **Project Bank** — ISS/DEC/LES/PRG storage is migrated. Resolved current FastAPI approvals become Bank decisions; backend-only Bank write routes are available.
 12. **Artifacts / evidence** — the newer disk-backed SHA-256 artifact byte store is retained, while Infra receives replayable `ARTIFACT_RECORDED` / `EVIDENCE_LINKED` facts.
-13. **Runtime / adapters** — legacy Conversation, routing, rollover, Frontier advisor/delegate, Codex, DSH, Git worktree and WorkerRunStore implementations are present. Frontier **CONSULT** is now exposed through the current FastAPI/Infra UI only when an authorized CCR advisor is configured; calls are idempotency-guarded and recorded in the Model Gateway/domain event ledgers.
-14. **Recovery / security primitives** — managed database/artifact backups, SHA-256 manifests, persistent backup-run registry and isolated restore verification drills are connected to FastAPI/Infra UI. Continuity checkpoints, MCP/Skill ACL registries, risk policy/audit, credential-file validation and secret redaction remain connected/migrated.
+13. **Runtime / adapters** — legacy Conversation, routing, rollover, Frontier advisor/delegate, Codex, DSH, Git worktree and WorkerRunStore implementations are present. Frontier **CONSULT** is exposed through the current FastAPI/Infra UI only when an authorized CCR advisor is configured. Frontier **DELEGATE** is capability-gated and disabled by default; when enabled it shares the authoritative WorkerRunStore, uses a hard CCR budget meter, isolated worktrees, independent acceptance commands and Parent Review before merge. Paid/externally executing submissions are operation-id guarded.
+14. **A2CM** — evidence-backed observations can enter the candidate layer only with a project-local Domain Event reference; a dedicated ACTIVE `a2cm.primary` session performs policy-versioned PROMOTE/REJECT/DEFER review with counterevidence and uncertainty retained. Candidate state is replayable.\n15. **Recovery / security primitives** — managed database/artifact backups, SHA-256 manifests, persistent backup-run registry and isolated restore verification drills are connected to FastAPI/Infra UI. Continuity checkpoints, MCP/Skill ACL registries, risk policy/audit, credential-file validation and secret redaction remain connected/migrated.
 
 See `backend/INFRA_MIGRATION.md` for the authority boundaries and compatibility decisions.
 
@@ -32,10 +32,8 @@ See `backend/INFRA_MIGRATION.md` for the authority boundaries and compatibility 
 
 These capabilities exist in backend code but are not silently substituted for current UI workflows:
 
-- legacy Dev group-chat ConversationService;
-- Frontier DELEGATE controls and Child worktree workflow (CONSULT is connected);
-- direct Codex/DSH worker launch controls;
-- A2CM-specific workflows;
+- legacy Dev group-chat ConversationService remains separate from the current typed Workspace flow;
+- raw direct Codex/DSH process-launch controls are intentionally not exposed separately; Codex/DSH execute through governed Frontier DELEGATE;
 - legacy Console command/web server.
 
 They should be exposed through typed FastAPI endpoints when their product/API contract is selected. Re-starting the old Console server would create a second control plane and is intentionally avoided.
