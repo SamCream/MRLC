@@ -114,7 +114,7 @@ The React application now has a dedicated Infra navigation domain with Overview,
 The following mature legacy backend modules remain intentionally **not** wired into the current React interaction model:
 
 - legacy Console command API and Console web server;
-- Dev group-chat ConversationService as a replacement for the current channel UI;
+- legacy Dev `ConversationService` as a product path. It is retained for reference only; current Workspace channels/response groups/jobs are authoritative and already cover routed multi-role replies plus knowledge-readiness constraints;
 - raw direct Codex/DSH process-launch controls are intentionally not exposed as a separate authority; Codex/DSH execute through governed Frontier DELEGATE.
 
 The code is kept as backend capability, but the new FastAPI remains the only product HTTP entry point. Future work should expose typed FastAPI routes after their UI/API contracts are chosen rather than reintroducing the old Console server.
@@ -140,3 +140,7 @@ The migration is not considered complete unless this workflow is green.
 - Recovery operations use server-owned paths only. Browser APIs never expose absolute backup/manifest paths, and verification restores into disposable staging rather than overwriting the live database.
 - Frontier CONSULT is capability-gated by CCR configuration and uses an operation-id registry to prevent accidental duplicate paid calls. Frontier DELEGATE now shares the authoritative WorkerRunStore, is disabled by default, validates its worker binary at startup, requires explicit `RUN_DELEGATE`, and keeps child changes isolated until Parent Review.
 - A2CM candidate intake is evidence-backed by project-local Domain EventStore IDs; Primary review records policy version, counterevidence and uncertainty, and belief state participates in deterministic replay.
+
+## Schema migration authority
+
+The FastAPI/compatibility-owned SQLite schema is now forward-versioned through `schema_migrations`. Existing databases without a ledger run the idempotent `app/1 compatibility-base`, `app/2 phase8-runtime-columns` and `app/3 infra-runtime-extensions` migrations once, then persist name/checksum/applied time. Startup refuses to continue if a recorded historical migration checksum no longer matches the code. Legacy Infra modules still self-initialize some module-local tables; these are reported as `module-local` rather than falsely claimed as centrally migrated.
