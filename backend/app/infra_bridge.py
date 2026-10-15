@@ -807,6 +807,22 @@ class InfraBridge:
                 task_id=child_task.task_id,
             )
             self._append(
+                project_id,"TASK_STATE_CHANGED",
+                {"from":"CREATED","to":"RUNNABLE","evidence_refs":[]},
+                actor_id=actor_id,
+                idempotency_key=f"frontier-delegate:{operation_id}:task-runnable",
+                task_id=child_task.task_id,
+            )
+            self._append(
+                project_id,"DELEGATION_CREATED",
+                {"relation_id":relation_id,"parent_task_id":parent_task_id,
+                 "child_session_id":child_session.session_id,
+                 "return_contract":result.return_contract or "artifact,tests,risks"},
+                actor_id=actor_id,
+                idempotency_key=f"frontier-delegate:{operation_id}:relation",
+                task_id=parent_task_id,
+            )
+            self._append(
                 project_id,"FRONTIER_DELEGATE_QUEUED",
                 {"request_id":result.request_id,"relation_id":relation_id,
                  "parent_task_id":parent_task_id,"child_task_id":child_task.task_id,
@@ -854,6 +870,13 @@ class InfraBridge:
                 )
                 self.tasks.transition_in_connection(
                     self.store.conn,run["child_task_id"],"RUNNABLE","FAILED"
+                )
+                self._append(
+                    project_id,"TASK_STATE_CHANGED",
+                    {"from":"RUNNABLE","to":"FAILED","evidence_refs":[]},
+                    actor_id=actor_id,
+                    idempotency_key=f"frontier-cancel:{request_id}:task-failed",
+                    task_id=run["child_task_id"],
                 )
                 state="CANCELLED";signal=None
             elif run["state"]=="RUNNING" and DelegationStore.mark_cancel_requested(
@@ -912,6 +935,14 @@ class InfraBridge:
             )
             state="ACCEPTED" if relation.state=="ACCEPTED" else "REWORK"
             DelegationStore.review(self.store.conn,request_id,state,merge_sha)
+            self._append(
+                project_id,"REVIEW_ACCEPTED" if state=="ACCEPTED" else "REVIEW_REWORK",
+                {"relation_id":run["relation_id"],"request_id":request_id,
+                 "merge_sha":merge_sha},
+                actor_id=actor_id,
+                idempotency_key=f"frontier-review:{request_id}:{state}:replay",
+                task_id=run["parent_task_id"],
+            )
             self._append(
                 project_id,"DELEGATION_REVIEWED",
                 {"request_id":request_id,"relation_id":run["relation_id"],
