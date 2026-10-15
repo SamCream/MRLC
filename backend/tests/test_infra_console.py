@@ -372,3 +372,62 @@ def test_frontier_delegate_queue_is_idempotent_replayable_and_cancellable(tmp_pa
         assert "DELEGATION_CREATED" in domain
         assert "FRONTIER_DELEGATE_QUEUED" in domain
         assert "DELEGATION_FAILED" in domain
+
+
+def test_a2cm_candidate_requires_domain_evidence_and_primary_review_is_replayable(tmp_path):
+    app,client=_client(tmp_path)
+    with client:
+        project_id=_login_and_project(client)
+        snapshot=client.get(f"/api/v1/projects/{project_id}/infra/a2cm")
+        assert snapshot.status_code==200,snapshot.text
+        assert snapshot.json()["capabilities"]["review"]["available"] is False
+
+        primary=client.post(f"/api/v1/projects/{project_id}/infra/a2cm/primary-session",json={})
+        assert primary.status_code==201,primary.text
+        primary_id=primary.json()["sessionId"]
+        again=client.post(f"/api/v1/projects/{project_id}/infra/a2cm/primary-session",json={})
+        assert again.status_code==201,again.text
+        assert again.json()["sessionId"]==primary_id
+        assert again.json()["created"] is False
+
+        events=client.get(f"/api/v1/projects/{project_id}/infra/events").json()["items"]
+        evidence=next(item["eventId"] for item in events if item["type"]=="PROJECT_CREATED")
+        rejected=client.post(f"/api/v1/projects/{project_id}/infra/a2cm/observations",json={
+            "content":"unsupported","evidenceEventId":"evt_missing","confidence":0.8,"source":"fast_tool",
+        })
+        assert rejected.status_code==400,rejected.text
+
+        candidate=client.post(f"/api/v1/projects/{project_id}/infra/a2cm/observations",json={
+            "content":"The current evidence supports hypothesis H.",
+            "evidenceEventId":evidence,"confidence":0.82,"source":"fast_tool",
+        })
+        assert candidate.status_code==201,candidate.text
+        candidate_id=candidate.json()["candidateId"]
+        replay=client.get(f"/api/v1/projects/{project_id}/infra/replay").json()
+        assert replay["beliefs"][candidate_id]=="CANDIDATE"
+
+        reviewed=client.post(
+            f"/api/v1/projects/{project_id}/infra/a2cm/candidates/{candidate_id}/review",
+            json={
+                "primarySessionId":primary_id,"decision":"PROMOTE",
+                "policyVersion":"a2cm.policy.v1",
+                "counterevidence":["small residual uncertainty"],
+                "uncertainty":["validation remains project-local"],
+                "rationale":"Domain evidence is sufficient under the current policy.",
+            },
+        )
+        assert reviewed.status_code==200,reviewed.text
+        assert reviewed.json()["status"]=="PROMOTED"
+        replay=client.get(f"/api/v1/projects/{project_id}/infra/replay").json()
+        assert replay["beliefs"][candidate_id]=="PROMOTED"
+
+        final=client.get(f"/api/v1/projects/{project_id}/infra/a2cm").json()
+        row=next(item for item in final["candidates"] if item["candidateId"]==candidate_id)
+        assert row["status"]=="PROMOTED"
+        assert row["reviewer"]=="primary"
+        assert final["activePrimarySessionId"]==primary_id
+        domain=[item["type"] for item in client.get(
+            f"/api/v1/projects/{project_id}/infra/events"
+        ).json()["items"]]
+        assert "BELIEF_CANDIDATE_CREATED" in domain
+        assert "BELIEF_CANDIDATE_REVIEWED" in domain
