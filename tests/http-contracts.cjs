@@ -16,6 +16,18 @@ const run=async()=>{
   await api.auth.tokenStatus();
   await api.auth.rotateToken('custom_login_token_12345678901234567890');
   await api.auth.revokeToken();
+  await api.infra.status();
+  await api.infra.overview('project/id');
+  await api.infra.events('project/id');
+  await api.infra.replay('project/id');
+  await api.infra.scheduler('project/id');
+  await api.infra.memory('project/id','shared');
+  await api.infra.context('project/id');
+  await api.infra.bank('project/id');
+  await api.infra.provenance('project/id');
+  await api.infra.invocations('project/id');
+  await api.infra.consistency('project/id');
+  await api.infra.operations('project/id');
   await repo.listProjects();
   await repo.createProject({name:'Demo',description:'Desc'});
   await repo.updateProject('project/id',{name:'Updated'});
@@ -33,6 +45,18 @@ const run=async()=>{
     ['GET','/api/v1/auth/me/token'],
     ['POST','/api/v1/auth/me/token'],
     ['DELETE','/api/v1/auth/me/token'],
+    ['GET','/api/v1/infra/status'],
+    ['GET','/api/v1/projects/project%2Fid/infra/overview'],
+    ['GET','/api/v1/projects/project%2Fid/infra/events'],
+    ['GET','/api/v1/projects/project%2Fid/infra/replay'],
+    ['GET','/api/v1/projects/project%2Fid/infra/scheduler'],
+    ['GET','/api/v1/projects/project%2Fid/infra/memory?roleId=shared'],
+    ['GET','/api/v1/projects/project%2Fid/infra/context'],
+    ['GET','/api/v1/projects/project%2Fid/infra/bank'],
+    ['GET','/api/v1/projects/project%2Fid/infra/provenance'],
+    ['GET','/api/v1/projects/project%2Fid/infra/invocations'],
+    ['GET','/api/v1/projects/project%2Fid/infra/consistency'],
+    ['GET','/api/v1/projects/project%2Fid/infra/operations'],
     ['GET','/api/v1/projects'],
     ['POST','/api/v1/projects'],
     ['PATCH','/api/v1/projects/project%2Fid'],
@@ -47,9 +71,9 @@ const run=async()=>{
     ['POST','/api/v1/agents/agent-id/resume'],
   ]);
   assert.deepEqual(calls[2].body,{token:'custom_login_token_12345678901234567890'});
-  assert.deepEqual(calls[7].body,{reason:'finished'});
-  assert.deepEqual(calls[13].body,{projectId:'project/id',roleTemplateId:'role-id',name:'R'});
+  assert.deepEqual(calls[19].body,{reason:'finished'});
+  assert.deepEqual(calls[25].body,{projectId:'project/id',roleTemplateId:'role-id',name:'R'});
   assert.equal(calls.every(c=>c.authorization==='Bearer demo-token'),true);
-  console.log('PASS: 16 HTTP adapter routes + auth-token management, ID encoding, request bodies and bearer headers');
+  console.log('PASS: 28 HTTP adapter routes including Infra Console, auth-token management, ID encoding, request bodies and bearer headers');
 };
 run().catch(e=>{console.error(e);process.exitCode=1;});
