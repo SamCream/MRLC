@@ -1,6 +1,6 @@
 import type { CreateRole, UpdateRole, UpdateProject, AgentAssignment, RoleTransition } from '../data/organizationRepository';
 import { ApiClient, idSegment as id, query } from './client';
-import type { Project, Task, NewTask, Agent, RoleTemplate, Channel, Message, ChannelResponseDispatch, ChannelResponseGroup, Artifact, ArtifactVersion, EvidenceLink, Approval, ApprovalRecord, ApprovalDecisionInput, ComputeSlot, RuntimeQueueItem, RuntimeMetrics, RuntimeBudget, RuntimeSession, AuditLog, Page, SystemHealth, SystemTopology, InfrastructureNode, Accelerator, LogFilter, LogSavedView, LogExportRequest, LogExportJob, ProjectRuntimeSettings, ProjectOverviewSnapshot, AppearanceSettings, AuthAccount, LoginTokenStatus, LoginTokenResult, InfraStatus, InfraOverview, InfraEvent, InfraReplayState, InfraReplayCompare, InfraSchedulerSnapshot, InfraMemoryItem, InfraContextView, InfraBankView, InfraA2cmSnapshot, InfraA2cmCandidate, InfraA2cmPrimaryResult, InfraA2cmReviewResult, InfraFrontierSnapshot, InfraFrontierConsultResult, InfraFrontierDelegateResult, InfraFrontierDelegateAction, InfraProvenance, InfraInvocation, InfraConsistency, InfraOperations, InfraBackupRun, InfraBackupActionResult } from '../domain/models';
+import type { Project, Task, NewTask, Agent, AgentSession, RoleTemplate, Channel, Message, ChannelResponseDispatch, ChannelResponseGroup, Artifact, ArtifactVersion, EvidenceLink, Approval, ApprovalRecord, ApprovalDecisionInput, ComputeSlot, RuntimeQueueItem, RuntimeMetrics, RuntimeBudget, RuntimeSession, AuditLog, Page, SystemHealth, SystemTopology, InfrastructureNode, Accelerator, LogFilter, LogSavedView, LogExportRequest, LogExportJob, ProjectRuntimeSettings, ProjectOverviewSnapshot, AppearanceSettings, AuthAccount, LoginTokenStatus, LoginTokenResult, InfraStatus, InfraOverview, InfraEvent, InfraReplayState, InfraReplayCompare, InfraSchedulerSnapshot, InfraMemoryItem, InfraContextView, InfraBankView, InfraA2cmSnapshot, InfraA2cmCandidate, InfraA2cmPrimaryResult, InfraA2cmReviewResult, InfraFrontierSnapshot, InfraFrontierConsultResult, InfraFrontierDelegateResult, InfraFrontierDelegateAction, InfraProvenance, InfraInvocation, InfraConsistency, InfraOperations, InfraBackupRun, InfraBackupActionResult } from '../domain/models';
 
 /** Candidate REST surface; paths must be negotiated with the real backend. */
 export function createServices(http: ApiClient) {
@@ -67,7 +67,7 @@ export function createServices(http: ApiClient) {
       list: (projectId: string) => http.get<Page<Agent>>(`/api/v1/projects/${id(projectId)}/agents`),
       assign: (input: AgentAssignment) => http.post<Agent>(`/api/v1/projects/${id(input.projectId)}/agents`, input),
       get: (agentId: string) => http.get<Agent>(`/api/v1/agents/${id(agentId)}`),
-      sessions: (agentId: string) => http.get<unknown>(`/api/v1/agents/${id(agentId)}/sessions`),
+      sessions: (agentId: string) => http.get<Page<AgentSession>>(`/api/v1/agents/${id(agentId)}/sessions`),
       park: (agentId: string) => http.post<Agent>(`/api/v1/agents/${id(agentId)}/park`),
       resume: (agentId: string) => http.post<Agent>(`/api/v1/agents/${id(agentId)}/resume`),
     },
