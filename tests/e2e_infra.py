@@ -38,6 +38,10 @@ def main() -> None:
 
         page.get_by_role("button",name=re.compile("Switch to Infra Core")).click()
         expect(page.get_by_role("heading",name="Infra Overview")).to_be_visible()
+        expect(page.get_by_text("App schema")).to_be_visible()
+        expect(page.get_by_text("v3",exact=True)).to_be_visible()
+        expect(page.get_by_text("3 applied",exact=True)).to_be_visible()
+        expect(page.get_by_text("module-local",exact=True)).to_be_visible()
         infra_nav=["".join(text.split()) for text in page.locator(".sidebar .nav-item").all_inner_texts()]
         assert infra_nav==[
             "⌂Overview","≡Events&Replay","⇄Scheduler&Leases","◇Memory&Context",
