@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime,timezone,timedelta
 from pathlib import Path
@@ -18,6 +19,7 @@ from .security import COOKIE, login as login_cookie, login_with_token, current_p
 from .executor import OpenAIExecutor
 from .common import logged_in
 from .infra_bridge import InfraBridge
+from runtime.frontier_delegate import FrontierDelegateRunner, delegate_worker_kind
 
 
 def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:str|None=None, secret:str|None=None, admin_token:str|None=None, executor:OpenAIExecutor|None=None) -> FastAPI:
@@ -33,6 +35,28 @@ def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:st
     store=Store(database_path)
     infra=InfraBridge(store,database_path,scheduler_capacity=max(1,min(int(os.getenv('MRLC_MAX_CONCURRENT_JOBS','2')),8)))
     runtime=executor or OpenAIExecutor()
+    delegate_runner=None
+    if os.getenv('MRLC_FRONTIER_ALLOW_DELEGATION','false').lower()=='true':
+        worker_kind=delegate_worker_kind()
+        if worker_kind=='dsh':
+            binary=(os.getenv('MRLC_DELEGATE_DSH_BIN') or '').strip()
+            if not binary:
+                raise RuntimeError('MRLC_DELEGATE_DSH_BIN is required when Frontier DELEGATE uses dsh')
+        else:
+            binary=(os.getenv('MRLC_DELEGATE_CODEX_BIN') or 'codex').strip()
+        resolved=(str(Path(binary).resolve()) if ('/' in binary and Path(binary).is_file()) else shutil.which(binary))
+        if not resolved:
+            raise RuntimeError(
+                f'Frontier DELEGATE is enabled but the {worker_kind} worker binary is unavailable: {binary}'
+            )
+        if worker_kind=='dsh':
+            os.environ['MRLC_DELEGATE_DSH_BIN']=resolved
+        else:
+            os.environ['MRLC_DELEGATE_CODEX_BIN']=resolved
+        delegate_runner=FrontierDelegateRunner(
+            infra,worker_store=infra.worker_runs
+        )
+        infra.attach_delegate_runner(delegate_runner)
     # Bootstrap the configured administrator identity on a new database. The password
     # itself stays in the environment: no password material is ever written to SQLite
     # for this account, so MRLC_ADMIN_PASSWORD remains the single source of truth.
@@ -62,12 +86,16 @@ def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:st
                 t=store.obj('task',j['target_id']) if j['kind']=='task' else None
                 if t and t['status']=='running':t['status']='failed';store.change('runtime','task',t,t['projectId'],t['id'])
             application.state.infra.reconcile_runtime_after_restart()
+        if delegate_runner is not None:
+            delegate_runner.start()
         worker=asyncio.create_task(job_worker(application))
         try:yield
         finally:
             worker.cancel()
             try:await worker
             except asyncio.CancelledError:pass
+            if delegate_runner is not None:
+                delegate_runner.close()
             store.close()
 
     api=FastAPI(title='MRLC Backend API',version='0.9.1',lifespan=lifespan)
