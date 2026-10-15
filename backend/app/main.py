@@ -17,6 +17,7 @@ from .storage import Store, ident, now
 from .security import COOKIE, login as login_cookie, login_with_token, current_principal, permission_for_request, resolve_project_scope
 from .executor import OpenAIExecutor
 from .common import logged_in
+from .infra_bridge import InfraBridge
 
 
 def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:str|None=None, secret:str|None=None, admin_token:str|None=None, executor:OpenAIExecutor|None=None) -> FastAPI:
@@ -28,7 +29,9 @@ def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:st
         raise RuntimeError('Set MRLC_ADMIN_PASSWORD (>=12 chars) and MRLC_SESSION_SECRET (>=32 chars) in the backend environment')
     if configured_admin_token and len(configured_admin_token)<24:
         raise RuntimeError('MRLC_ADMIN_TOKEN must contain at least 24 characters when configured')
-    store=Store(db_path or os.getenv('MRLC_DB_PATH','./var/mrlc.sqlite3'))
+    database_path=db_path or os.getenv('MRLC_DB_PATH','./var/mrlc.sqlite3')
+    store=Store(database_path)
+    infra=InfraBridge(store,database_path,scheduler_capacity=max(1,min(int(os.getenv('MRLC_MAX_CONCURRENT_JOBS','2')),8)))
     runtime=executor or OpenAIExecutor()
     # Bootstrap the configured administrator identity on a new database. The password
     # itself stays in the environment: no password material is ever written to SQLite
@@ -58,6 +61,7 @@ def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:st
                     ('Server restarted while provider call was in flight; no replay-safe checkpoint exists',now(),j['id']))
                 t=store.obj('task',j['target_id']) if j['kind']=='task' else None
                 if t and t['status']=='running':t['status']='failed';store.change('runtime','task',t,t['projectId'],t['id'])
+            application.state.infra.reconcile_runtime_after_restart()
         worker=asyncio.create_task(job_worker(application))
         try:yield
         finally:
@@ -68,6 +72,7 @@ def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:st
 
     api=FastAPI(title='MRLC Backend API',version='0.8.1',lifespan=lifespan)
     api.state.store=store
+    api.state.infra=infra
     api.state.password=passwd
     api.state.admin_username=admin_username
     api.state.admin_token=configured_admin_token
@@ -145,13 +150,15 @@ def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:st
 
     @api.get('/api/v1/capabilities')
     def capabilities(_:Any=Depends(logged_in)):
-        return {'backend':'sqlite','databaseDurable':True,'modelExecutorConfigured':runtime.available,
+        return {'backend':'sqlite+infra-core','databaseDurable':True,'modelExecutorConfigured':runtime.available,
                 'agentCheckpointSupported':False,'physicalGpuControlSupported':False,
                 'taskDispatchSupported':runtime.available,'simulatedMetrics':False,
-                'authorizationMode':'rbac','version':'0.8.1'}
+                'infraCoreMigrated':True,'domainEventReplay':True,'consistencyPrimitives':True,
+                'memoryBankAvailable':True,'projectionCompatibility':True,
+                'authorizationMode':'rbac','version':'0.9.0-infra'}
 
-    from . import routes_auth,routes_organization,routes_workspace,routes_artifacts,routes_approvals,routes_runtime,routes_system,routes_coordination
-    for routes in (routes_auth,routes_organization,routes_workspace,routes_artifacts,routes_approvals,routes_runtime,routes_system,routes_coordination):
+    from . import routes_auth,routes_organization,routes_workspace,routes_artifacts,routes_approvals,routes_runtime,routes_system,routes_coordination,routes_infra
+    for routes in (routes_auth,routes_organization,routes_workspace,routes_artifacts,routes_approvals,routes_runtime,routes_system,routes_coordination,routes_infra):
         routes.register(api,store,runtime)
 
     static_directory=os.getenv('MRLC_STATIC_DIR','').strip()
@@ -171,9 +178,8 @@ async def job_worker(application:FastAPI):
       while True:
         if executor.available and len(running)<max_concurrent:
             with s.tx():
-                row=s.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY priority DESC, created_at LIMIT 1").fetchone()
-                if row:
-                    data=dict(row)
+                data=application.state.infra.claim_next_job()
+                if data:
                     lease=(datetime.now(timezone.utc)+timedelta(minutes=10)).isoformat().replace('+00:00','Z')
                     s.execute("UPDATE jobs SET status='running',started_at=?,lease_expires_at=? WHERE id=?",(now(),lease,data['id']))
                     agent=s.obj('agent',data['agent_id'])
@@ -204,6 +210,7 @@ async def job_worker(application:FastAPI):
                         obj=s.obj('task',row['target_id'])
                         if obj and obj['status']=='running':
                             obj['status']='failed';s.change('worker','task',obj,row['project_id'],obj['id'])
+                    application.state.infra.finish_job(dict(row),'FAILED')
 
 
 async def run_job(application:FastAPI,job:dict):
@@ -253,6 +260,7 @@ async def run_job(application:FastAPI,job:dict):
             usage={'id':ident('usage'),'projectId':job['project_id'],'jobId':job['id'],'agentId':job['agent_id'],'modelId':result.get('model',getattr(provider,'model',None)),
                    'inputTokens':result.get('inputTokens'),'outputTokens':result.get('outputTokens'),'costUsd':result.get('costUsd'),'usageReported':bool(result.get('usageReported')),'createdAt':now()}
             s.put('usageRecord',usage,job['project_id'])
+            application.state.infra.record_provider_result(job,result)
             if job['kind']=='task':
                 content=completion.encode('utf-8')
                 digest=hashlib.sha256(content).hexdigest()
@@ -306,6 +314,8 @@ async def run_job(application:FastAPI,job:dict):
             if slot:
                 slot.update(state='free',agentId=None,taskId=None,modelId=None)
                 s.change('worker','slot',slot,job['project_id'])
+            terminal=s.execute('SELECT status FROM jobs WHERE id=?',(job['id'],)).fetchone()
+            application.state.infra.finish_job(job,(terminal['status'] if terminal else 'unknown').upper())
 
 
 # When launched by uvicorn, environment variables must be present before import.

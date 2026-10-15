@@ -96,6 +96,7 @@ def register(api,store:Store,runtime):
                 a['status']='pending'
             else:
                 a.update(status='resolved',resolution=decision,resolvedAt=record['decidedAt'])
+                api.state.infra.record_approval_decision(a,record)
             event_and_audit(store,'owner','approval',a,a['projectId'])
             # Granting a dangerous permission does NOT call an uncontrolled side effect.
             # A later typed action still checks its own server policy.

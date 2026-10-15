@@ -1,13 +1,14 @@
-# MRLC Control Room — React + TypeScript + FastAPI (Phase 8.1)
+# MRLC Control Room — React + TypeScript + FastAPI + Migrated Infra Core
 
-A full-stack **single-operator MRLC foundation**. The React frontend renders the control room and sends typed HTTP requests. **The FastAPI backend owns business validation, durable state, permissions, lifecycle decisions, evidence checks, audit and model requests.** Offline browser Mock repositories exist only when explicitly selected for demos.
+A full-stack MRLC control room. The React frontend renders the existing product UI and sends typed HTTP requests. **FastAPI remains the sole product HTTP entry point, while the recovered MRLC Infra/Runtime core now owns replayable domain events, scheduler leases, consistency primitives, Memory/Bank state and provider invocation records underneath the compatibility API.** Offline browser Mock repositories exist only when explicitly selected for demos.
 
 ## Current capability
 
-- **Frontend:** 12 React/TypeScript pages preserving the original Strata-inspired dark design; global shell, stage completion cards, Tasks/Workspace actions, optional mock mode.
-- **Backend:** authenticated FastAPI, transactional SQLite, disk-backed artifact bytes + SHA-256/version history, task dependency and evidence workflow, approvals, project/role/Agent CRUD, project and UI settings, logs, SSE, logical inference jobs.
-- **Inference:** optional OpenAI-compatible provider (`/v1/chat/completions`). Once a real provider is configured, Task Execute and explicit Agent Reply are real backend requests, not browser simulations.
-- **Unknown metrics remain unknown:** no fictitious GPU statistics, model session checkpoints, token spend or runtime availability.
+- **Frontend:** unchanged by the Infra migration; the current React/TypeScript pages and `/api/v1` contracts continue to work through FastAPI.
+- **Application backend:** multi-user RBAC, password/dedicated-token sessions, project/task/workspace/artifact/approval APIs, disk-backed SHA-256 artifacts, logs and SSE.
+- **Infra core:** authoritative EventStore + replay, Project/Task/Session registries, consistency outbox/inbox/Saga, persistent Scheduler with lease/fencing, History, Memory/Retrieval, Project Bank, Continuity, MCP/Skills and recovery primitives.
+- **Runtime/Gateway:** the existing FastAPI job worker now dispatches through the migrated Scheduler and uses the migrated CCR OpenAI-compatible provider adapter; invocation IDs/provider request IDs/usage are written to the Model Gateway ledger.
+- **Unknown metrics remain unknown:** no fictitious physical GPU allocations, provider checkpoints or telemetry are invented.
 
 ## Local startup
 
@@ -62,7 +63,7 @@ Treat URL tokens as secrets. HTTPS is required for remote use, and the initial p
 
 ## Real provider configuration
 
-The model executor is deliberately **not** connected to any assumed CCR, A2CM or Strata port. Supply an endpoint that actually implements the authorized OpenAI-compatible Chat Completions protocol:
+The FastAPI executor now uses the migrated CCR OpenAI-compatible provider adapter, but endpoint selection remains explicit. Supply the authorized OpenAI-compatible endpoint you actually run:
 
 ```bash
 export MRLC_MODEL_BASE_URL='http://127.0.0.1:1234/v1'
@@ -76,20 +77,15 @@ Without this configuration, task dispatch and explicit Agent replies return 503;
 
 ```text
 backend/
-  app/
-    main.py                  app composition and asynchronous job worker
-    storage.py               transactional SQLite and event/audit records
-    security.py              authentication/session logic
-    executor.py              real OpenAI-compatible HTTP transport
-    common.py                validation, scope and state checks
-    routes_organization.py   projects, roles, agents
-    routes_workspace.py      channels, messages, tasks and acceptance
-    routes_artifacts.py      byte storage, versions and evidence
-    routes_approvals.py      revisioned decisions
-    routes_runtime.py        jobs, dispatch, logical slots
-    routes_system.py         overview, health, logs and settings
-  tests/test_api.py           integration/authorization/persistence tests
-  openapi.json                exported FastAPI HTTP route schema
+  app/                       FastAPI application/compatibility layer
+  infra/                     migrated authoritative Infra core
+  runtime/                   conversation/frontier/rollover runtime
+  gateway/ccr/               provider client + budget/provider adapters
+  adapters/                  Codex/DSH/Git worker adapters
+  plugins/dev/profile/       migrated Dev runtime profile
+  tests/                     FastAPI + migration + legacy-core regressions
+  INFRA_MIGRATION.md         migration authority/boundary record
+  openapi.json               exported FastAPI HTTP route schema
 src/
   app/                       App, AuthGate and global shell
   pages/                     12 React/TSX pages
@@ -109,7 +105,7 @@ reference/                    original HTML and archived Phase 6 README
 - [`API_CATALOG.md`](API_CATALOG.md) and `INTERFACE_DISCOVERY_PHASE*.md`: historical pre-backend interface discovery documents.
 
 ```bash
-npm run backend:test  # 15 Python integration tests
+npm run backend:test  # FastAPI + migration + migrated core regressions
 npm run test:all      # historical frontend domain/adapter tests + shim
 npm run check:shim    # React shim guard
 npm run build         # TypeScript + production Vite build
@@ -119,7 +115,7 @@ Backend integration tests, frontend regression suites, TypeScript typecheck and 
 
 ## Important scope limits
 
-This is **not the full historical MRLC PRD** and not production ready. Remaining backend integrations include full CCR/A2CM scheduling and coordination, real provider checkpoint/restore, physical GPU control, model usage metering, distributed workers, multi-user RBAC and mature database migrations, backups and security review. Server-side approval history does not automatically authorize arbitrary external actions. See `BACKEND_STATUS.md`.
+This is still **not production ready**. Mature legacy Infra/Runtime/Gateway code has been migrated, but the old Console server is intentionally not restored and Dev/A2CM/Frontier/Codex/DSH product controls are not yet activated through the current React UI. Provider-specific KV checkpoint/restore, physical GPU control, distributed leader election, a complete versioned migration framework, SSO/federation and production key management remain open. See `BACKEND_STATUS.md` and `backend/INFRA_MIGRATION.md`.
 
 ## Phase 8 backend authority
 
