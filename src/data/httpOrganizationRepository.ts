@@ -1,9 +1,9 @@
 import type { Services } from '../api/services';
 import type { OrganizationRepository } from './organizationRepository';
-/** Future adapter, disabled by default until confirmed backend routes and auth exist. */
+/** HTTP organization adapter. SSE subscription is supplied by the shared invalidation wrapper. */
 export function httpOrganizationRepository(api: Services): OrganizationRepository {
   return {
-    subscribe: () => () => {}, // SSE revalidation must be wired before production
+    subscribe: () => () => {}, // Replaced by withRemoteInvalidation() at the composition root.
     listProjects: api.projects.list,
     createProject: api.projects.create,
     updateProject: api.projects.update,
@@ -13,6 +13,7 @@ export function httpOrganizationRepository(api: Services): OrganizationRepositor
     updateRole: api.roles.update,
     transitionRole: api.roles.lifecycle,
     listAgents: api.agents.list,
+    listAgentSessions: api.agents.sessions,
     assignAgent: api.agents.assign,
     parkAgent: api.agents.park,
     resumeAgent: api.agents.resume,
