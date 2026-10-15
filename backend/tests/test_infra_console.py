@@ -217,3 +217,66 @@ def test_managed_backup_and_restore_drill_are_recorded_without_path_leakage(tmp_
         runs=client.get("/api/v1/infra/backups").json()["items"]
         assert {row["kind"] for row in runs}>={"BACKUP","VERIFY"}
         assert all("destination" not in row for row in runs)
+
+
+class FakeFrontierAdvisor:
+    def __init__(self):
+        self.calls=0
+    def consult(self,request):
+        self.calls+=1
+        return "Frontier advice: inspect the proof obligation before accepting the claim."
+
+
+def test_frontier_consult_is_capability_gated_evented_and_idempotent(tmp_path):
+    app,client=_client(tmp_path)
+    advisor=FakeFrontierAdvisor()
+    app.state.infra.frontier_advisor=advisor
+    with client:
+        project_id=_login_and_project(client)
+        role=client.post("/api/v1/roles",json={
+            "name":"Engineer","purpose":"own task","lifecycle":"active",
+            "capabilities":[],"allowedPermissions":["tasks.execute","messages.reply"],
+        })
+        assert role.status_code==201,role.text
+        role_id=role.json()["id"]
+        agent=client.post(f"/api/v1/projects/{project_id}/agents",json={
+            "roleTemplateId":role_id,"name":"Engineer"
+        })
+        assert agent.status_code==201,agent.text
+        agent_row=next(item for item in app.state.store.all("agent",project_id)
+                       if item["id"]==agent.json()["id"])
+        session_id=agent_row["sessionId"]
+        task=client.post(f"/api/v1/projects/{project_id}/tasks",json={
+            "projectId":project_id,"title":"Frontier parent","description":"review risk",
+            "assigneeRoleId":role_id,"dependencyIds":[],"acceptanceCriteria":[],
+        })
+        assert task.status_code==201,task.text
+        task_id=task.json()["id"]
+
+        status=client.get(f"/api/v1/projects/{project_id}/infra/frontier")
+        assert status.status_code==200,status.text
+        assert status.json()["capabilities"]["consult"]["available"] is True
+        assert status.json()["capabilities"]["delegate"]["available"] is False
+
+        body={
+            "parentTaskId":task_id,"ownerSessionId":session_id,
+            "capability":"review mathematical risk","budget":100,
+            "operationId":"frontier-operation-1",
+        }
+        first=client.post(f"/api/v1/projects/{project_id}/infra/frontier/consult",json=body)
+        assert first.status_code==201,first.text
+        assert first.json()["advice"].startswith("Frontier advice:")
+        assert first.json()["replayed"] is False
+        second=client.post(f"/api/v1/projects/{project_id}/infra/frontier/consult",json=body)
+        assert second.status_code==201,second.text
+        assert second.json()["requestId"]==first.json()["requestId"]
+        assert second.json()["replayed"] is True
+        assert advisor.calls==1
+
+        snapshot=client.get(f"/api/v1/projects/{project_id}/infra/frontier").json()
+        assert snapshot["requests"][0]["requestId"]==first.json()["requestId"]
+        domain=[item["type"] for item in client.get(
+            f"/api/v1/projects/{project_id}/infra/events"
+        ).json()["items"]]
+        assert "FRONTIER_CONSULT_REQUESTED" in domain
+        assert "FRONTIER_CONSULT_RETURNED" in domain
