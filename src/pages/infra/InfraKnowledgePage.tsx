@@ -32,7 +32,7 @@ export default function InfraKnowledgePage(){
   </section>;
 }
 
-function MemoryCard({item}:{item:InfraMemoryItem}){
+function MemoryCard({item}:{item:InfraMemoryItem;key?:string}){
   return <article className="infra-memory-card"><div className="infra-memory-top"><span className="badge cyan">{item.kind}</span><span className="badge">{item.role_scope}</span><strong>{Math.round(item.confidence*100)}%</strong></div><p>{item.content}</p><div className="infra-memory-meta"><span>memory <code>{item.memory_id}</code></span><span>sources {item.source_event_refs.length}</span><span>valid {infraTime(item.valid_from)} → {item.valid_to?infraTime(item.valid_to):'∞'}</span></div></article>;
 }
 function BankRecords({data}:{data:InfraBankView|null}){
