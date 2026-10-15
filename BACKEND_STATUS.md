@@ -34,7 +34,7 @@ See `backend/INFRA_MIGRATION.md` for the authority boundaries and compatibility 
 
 These capabilities exist in backend code but are not silently substituted for current UI workflows:
 
-- legacy Dev group-chat ConversationService remains separate from the current typed Workspace flow;
+- legacy `ConversationService` is retained only as migration/reference code. Current Workspace routing, response groups, Scheduler execution and knowledge-readiness rules supersede it; starting it would create a second conversation source of truth;
 - raw direct Codex/DSH process-launch controls are intentionally not exposed separately; Codex/DSH execute through governed Frontier DELEGATE;
 - legacy Console command/web server.
 
@@ -42,7 +42,7 @@ They should be exposed through typed FastAPI endpoints when their product/API co
 
 ## Still not production-complete
 
-- Database upgrades remain additive/in-place rather than a complete cross-module versioned migration framework.
+- The FastAPI/compatibility schema now has a forward-only `schema_migrations` ledger (`app/1..3`) with migration checksums and startup signature validation. Legacy Infra modules still own some self-initializing module-local schemas, so those schemas are not yet fully consolidated into the central ledger.
 - Provider-specific model KV checkpoint/restore and generic pause/resume are not claimed.
 - Physical GPU lease/control is not claimed; scheduler leases are logical runtime leases.
 - Distributed multi-node leader election and external transactional database support are not implemented.
