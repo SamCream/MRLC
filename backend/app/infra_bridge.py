@@ -28,6 +28,8 @@ from infra.skills import SkillRegistry
 from infra.worker_runtime_state import WorkerRunStore
 from infra.model_gateway import ModelGateway, ModelResult
 from infra.replay import replay_project
+from infra.context.bundle import ContextAssembler, ContextCandidate
+from infra.retrieval.pipeline import RetrievalPipeline, RetrievalDocument
 
 
 _TASK_STATE = {
@@ -62,6 +64,8 @@ class InfraBridge:
         self.skills = SkillRegistry(database_path)
         self.worker_runs = WorkerRunStore(database_path)
         self.model_gateway = ModelGateway({}, database_path=database_path)
+        self.context_assembler = ContextAssembler()
+        self.retrieval = RetrievalPipeline()
         store.infra_bridge = self
         self.reconcile_projection()
 
@@ -340,6 +344,102 @@ class InfraBridge:
                      {"resource_id":"slot:"+sid,"session_id":sid,"job_id":job["id"]},
                      actor_id="scheduler",idempotency_key=f"compat:job:{job['id']}:lease-expired",
                      task_id=job["target_id"] if job["kind"]=="task" else None)
+
+    def assemble_runtime_context(
+        self, *, project_id: str, role_id: str, query: str, job_id: str,
+        profile_id: str="runtime", token_budget: int=1200,
+    ):
+        """Build and persist the exact durable-memory context used for one provider call.
+
+        Retrieval is deterministic and project/role scoped. When lexical retrieval finds
+        no hit, only a small high-confidence fallback set is considered; all omissions
+        remain visible in the persisted trace.
+        """
+        now_dt=datetime.now(timezone.utc)
+        active=self.memory.active(project_id,role_id,now_dt)
+        documents=[
+            RetrievalDocument(
+                document_id=item.memory_id,
+                project_id=item.project_id,
+                role_scope=item.role_scope,
+                content=item.content,
+                occurred_at=item.valid_from,
+                confidence=item.confidence,
+                source_refs=tuple(item.source_event_refs),
+                status=item.status,
+                valid_to=item.valid_to,
+            )
+            for item in active
+        ]
+        hits=self.retrieval.search(
+            query,project_id,role_id,now_dt,documents,limit=min(24,len(documents))
+        ) if query.strip() else []
+        hit_ids=[hit.document.document_id for hit in hits]
+        if hit_ids:
+            selected_ids=set(hit_ids)
+            rank_bonus={memory_id:max(1,200-index) for index,memory_id in enumerate(hit_ids)}
+        else:
+            fallback=sorted(active,key=lambda item:(-item.confidence,item.valid_from,item.memory_id))[:3]
+            selected_ids={item.memory_id for item in fallback if item.confidence>=0.75}
+            rank_bonus={}
+        candidates=[]
+        candidate_meta=[]
+        retrieval_excluded={}
+        for item in active:
+            if item.memory_id not in selected_ids:
+                retrieval_excluded[f"memory:{item.memory_id}"]="retrieval_miss"
+                candidate_meta.append({
+                    "sourceRef":f"memory:{item.memory_id}","memoryId":item.memory_id,
+                    "confidence":item.confidence,"roleScope":item.role_scope,
+                    "retrieval":"miss",
+                })
+                continue
+            priority=round(item.confidence*100)+rank_bonus.get(item.memory_id,0)
+            candidate=ContextCandidate(
+                source_ref=f"memory:{item.memory_id}",
+                project_id=item.project_id,
+                content=item.content,
+                token_count=max(1,len(item.content.split())),
+                priority=priority,
+                occurred_at=item.valid_from,
+                role_scopes=(item.role_scope,),
+                sensitivity="project",
+            )
+            candidates.append(candidate)
+            candidate_meta.append({
+                "sourceRef":candidate.source_ref,"memoryId":item.memory_id,
+                "confidence":item.confidence,"roleScope":item.role_scope,
+                "retrieval":"hit" if item.memory_id in hit_ids else "fallback",
+                "priority":priority,
+            })
+        bundle=self.context_assembler.build(
+            project_id,profile_id,role_id,max(0,int(token_budget)),candidates
+        )
+        excluded={**retrieval_excluded,**bundle.manifest.excluded}
+        trace_id="ctxrun_"+hashlib.sha256(
+            f"{project_id}:{job_id}:{bundle.bundle_id}".encode()
+        ).hexdigest()[:24]
+        self.store.conn.execute(
+            "INSERT OR REPLACE INTO context_assembly_runs("
+            "id,project_id,job_id,role_id,profile_id,query_excerpt,token_budget,total_tokens,"
+            "included_json,excluded_json,candidates_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                trace_id,project_id,job_id,role_id,profile_id,str(query)[:2000],
+                int(token_budget),bundle.total_tokens,json.dumps(bundle.manifest.included),
+                json.dumps(excluded,sort_keys=True),json.dumps(candidate_meta,sort_keys=True),
+                now_dt.isoformat(),
+            ),
+        )
+        self._append(
+            project_id,"CONTEXT_ASSEMBLED",
+            {"context_run_id":trace_id,"job_id":job_id,"role_id":role_id,
+             "bundle_id":bundle.bundle_id,"included":list(bundle.manifest.included),
+             "excluded":excluded,"token_budget":int(token_budget),
+             "total_tokens":bundle.total_tokens},
+            actor_id="context-assembler",
+            idempotency_key=f"context:{job_id}:{bundle.bundle_id}",
+        )
+        return bundle
 
     def record_provider_result(self, job: dict, result: dict, *, status: str="COMPLETED") -> None:
         model=str(result.get("model") or "unknown")
