@@ -85,7 +85,7 @@ export interface InfraSchedulerSnapshot {
 }
 export interface InfraReplayState {
   projects:Record<string,string>; tasks:Record<string,string>; sessions:Record<string,string>;
-  memories:Record<string,string>; issues:Record<string,string>; decisions:Record<string,string>;
+  memories:Record<string,string>; beliefs?:Record<string,string>; issues:Record<string,string>; decisions:Record<string,string>;
   artifacts:Record<string,string>; delegations?:Record<string,string>; leases?:Record<string,number>;
   dependencies?:Array<[string,string]>; [key:string]:unknown;
 }
@@ -127,6 +127,23 @@ export interface InfraBankLesson { lesson_id:string;project_id:string;title:stri
 export interface InfraBankProgress { progress_id:string;project_id:string;milestone:string;status:string;artifact_refs:string[]; }
 export interface InfraBankView {
   issues:InfraBankIssue[]; decisions:InfraBankDecision[]; lessons:InfraBankLesson[]; progress:InfraBankProgress[];
+}
+export interface InfraA2cmCandidate {
+  candidateId:string;actorId:string;statement:string;evidenceRefs:string[];
+  confidence:number;status:string;reviewer:string|null;policyVersion:string|null;
+  counterevidence:string[];uncertainty:string[];
+}
+export interface InfraA2cmSnapshot {
+  capabilities:{review:{available:boolean;reason:string|null}};
+  primarySessions:Array<{sessionId:string;lifecycle:string}>;
+  activePrimarySessionId:string|null;
+  candidates:InfraA2cmCandidate[];
+}
+export interface InfraA2cmPrimaryResult {sessionId:string;lifecycle:string;created:boolean}
+export interface InfraA2cmReviewResult {
+  candidate_id:string;previous_status:string;status:string;reviewer:string;
+  policy_version:string;confidence:number;counterevidence_count:number;
+  uncertainty_count:number;primary_session_id:string;rationale:string;
 }
 export interface InfraEvidenceNode {
   stage:string;status:string;ref?:string|null;summary?:string|null;source?:string|null;
