@@ -439,7 +439,7 @@ class InfraBridge:
             actor_id="context-assembler",
             idempotency_key=f"context:{job_id}:{bundle.bundle_id}",
         )
-        return bundle
+        return bundle,trace_id
 
     def record_provider_result(self, job: dict, result: dict, *, status: str="COMPLETED") -> None:
         model=str(result.get("model") or "unknown")
