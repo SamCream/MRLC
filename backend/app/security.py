@@ -181,7 +181,7 @@ READ_PERMISSIONS={
 }
 WRITE_PERMISSIONS={
     'projects':'projects.write','tasks':'tasks.write','channels':'workspace.write','artifacts':'artifacts.write',
-    'approvals':'approvals.decide','runtime':'runtime.control','roles':'projects.write','agents':'agents.control','system':'settings.write','logs':'settings.write','settings':'settings.write'
+    'approvals':'approvals.decide','runtime':'runtime.control','roles':'projects.write','agents':'agents.control','system':'settings.write','logs':'settings.write','settings':'settings.write','infra':'settings.write'
 }
 
 def permission_for_request(method:str,path:str):
