@@ -4,7 +4,7 @@ import {repositories} from '../data/repositories';
 const organization=repositories.organization;
 import { useRepositoryQuery } from '../hooks/useRepositoryQuery';
 
-export const pageIds = ['overview','workspace','tasks','artifacts','projects','agents','roles','approvals','compute','infrastructure','logs','settings'] as const;
+export const pageIds = ['overview','workspace','tasks','artifacts','projects','agents','roles','approvals','compute','infrastructure','logs','settings','infra-overview','infra-events','infra-scheduler','infra-knowledge','infra-provenance','infra-invocations','infra-consistency'] as const;
 export type PageId = typeof pageIds[number];
 const validPage = (value: string): value is PageId => pageIds.some(x => x===value);
 type ShellState = { page: PageId; navigate: (page: PageId) => void; projectId: string; setProjectId: (id: string) => void; project: Project | null; projects: Project[]; loading: boolean; error: string | null };
