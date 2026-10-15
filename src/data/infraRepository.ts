@@ -1,6 +1,6 @@
 import type {
   InfraStatus,InfraOverview,InfraEvent,InfraReplayState,InfraReplayCompare,InfraSchedulerSnapshot,
-  InfraMemoryItem,InfraContextView,InfraBankView,InfraProvenance,InfraInvocation,
+  InfraMemoryItem,InfraContextView,InfraBankView,InfraFrontierSnapshot,InfraFrontierConsultResult,InfraProvenance,InfraInvocation,
   InfraConsistency,InfraOperations,InfraBackupRun,InfraBackupActionResult,Page
 } from '../domain/models';
 import type {Services} from '../api/services';
@@ -15,6 +15,8 @@ export interface InfraRepository {
   getMemory(projectId:string,roleId?:string):Promise<Page<InfraMemoryItem>>;
   getContext(projectId:string):Promise<InfraContextView>;
   getBank(projectId:string):Promise<InfraBankView>;
+  getFrontier(projectId:string):Promise<InfraFrontierSnapshot>;
+  frontierConsult(projectId:string,input:{parentTaskId:string;ownerSessionId:string;capability:string;budget:number;operationId:string}):Promise<InfraFrontierConsultResult>;
   getProvenance(projectId:string):Promise<InfraProvenance>;
   getInvocations(projectId:string):Promise<Page<InfraInvocation>>;
   getConsistency(projectId:string):Promise<InfraConsistency>;
@@ -45,6 +47,8 @@ export function httpInfraRepository(services:Services):InfraRepository{
     getMemory:(projectId,roleId)=>services.infra.memory(projectId,roleId),
     getContext:(projectId)=>services.infra.context(projectId),
     getBank:(projectId)=>services.infra.bank(projectId),
+    getFrontier:(projectId)=>services.infra.frontier(projectId),
+    frontierConsult:(projectId,input)=>services.infra.frontierConsult(projectId,input),
     getProvenance:(projectId)=>services.infra.provenance(projectId),
     getInvocations:(projectId)=>services.infra.invocations(projectId),
     getConsistency:(projectId)=>services.infra.consistency(projectId),
