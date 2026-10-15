@@ -165,3 +165,27 @@
   .infra-kv{grid-template-columns:1fr}
   .infra-list-row,.infra-chain-row{grid-template-columns:1fr auto}
 }
+
+
+/* Infra runtime completion: trace/replay/recovery affordances */
+.infra-toolbar-row{display:flex;align-items:center;gap:10px;justify-content:space-between;margin-bottom:10px}
+.infra-toolbar-row .infra-tabs{margin-bottom:0}
+.infra-inline-field{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:10px}
+.infra-inline-field select{min-width:150px;background:#101619;border:1px solid var(--line);color:#dce3e5;border-radius:8px;padding:7px 9px}
+.infra-context-trace{display:grid;gap:12px}
+.infra-context-trace h3{font-size:11px;margin:2px 0 -4px;color:#c9d3d5}
+.infra-context-trace .infra-kv p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.infra-replay-actions{display:flex;gap:8px;justify-content:flex-end;border-top:1px solid var(--line-soft);margin-top:8px;padding:10px 12px}
+.infra-diff-list{padding:10px;display:grid;gap:9px}
+.infra-diff-section{border:1px solid var(--line-soft);background:#0f1517;border-radius:8px;padding:10px}
+.infra-diff-section>strong{display:block;font-size:11px;text-transform:capitalize;margin-bottom:6px}
+.infra-success{border:1px solid rgba(39,217,154,.32);background:rgba(39,217,154,.07);color:#9ee8ca;border-radius:9px;padding:9px 11px;margin:0 0 10px}
+.infra-recovery-card{margin-top:10px}
+.infra-actions{display:flex;gap:7px;align-items:center}
+.infra-recovery-card .card-head{flex-wrap:wrap}
+@media(max-width:760px){
+  .infra-toolbar-row{align-items:stretch;flex-direction:column}
+  .infra-inline-field{justify-content:space-between}
+  .infra-actions{width:100%}
+  .infra-actions .btn{flex:1}
+}
