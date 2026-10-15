@@ -40,13 +40,18 @@ class FrontierDelegateRunner:
     Integration into the project branch only happens through Parent Review (ConsoleCommands).
     """
 
-    def __init__(self, model, adapter=None, *, verify_timeout=120, meter=None):
+    def __init__(self, model, adapter=None, *, verify_timeout=120, meter=None, worker_store=None):
         self.model = model
         self.root = (Path(model.database_path).parent / "projects").resolve()
-        # Infra owns the formal worker-run metadata (see infra/worker_runtime_state.py); the
-        # delegation runtime only points at it, so no adapter ever becomes an authoritative writer.
-        self.worker_store_path = Path(model.database_path).parent / "worker-runs.sqlite3"
-        store = WorkerRunStore(self.worker_store_path)
+        # The FastAPI integration injects the same WorkerRunStore used by InfraBridge.
+        # Legacy callers may omit it, but no second store is created when an authoritative
+        # store is already available.
+        if worker_store is None:
+            self.worker_store_path = Path(model.database_path).parent / "worker-runs.sqlite3"
+            store = WorkerRunStore(self.worker_store_path)
+        else:
+            self.worker_store_path = Path(model.database_path)
+            store = worker_store
         self.worker_kind = delegate_worker_kind()
         self.adapter = adapter or self._default_adapter(store)
         self.store = store
