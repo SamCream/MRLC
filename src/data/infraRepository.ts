@@ -1,6 +1,6 @@
 import type {
   InfraStatus,InfraOverview,InfraEvent,InfraReplayState,InfraReplayCompare,InfraSchedulerSnapshot,
-  InfraMemoryItem,InfraContextView,InfraBankView,InfraFrontierSnapshot,InfraFrontierConsultResult,InfraProvenance,InfraInvocation,
+  InfraMemoryItem,InfraContextView,InfraBankView,InfraFrontierSnapshot,InfraFrontierConsultResult,InfraFrontierDelegateResult,InfraFrontierDelegateAction,InfraProvenance,InfraInvocation,
   InfraConsistency,InfraOperations,InfraBackupRun,InfraBackupActionResult,Page
 } from '../domain/models';
 import type {Services} from '../api/services';
@@ -17,6 +17,9 @@ export interface InfraRepository {
   getBank(projectId:string):Promise<InfraBankView>;
   getFrontier(projectId:string):Promise<InfraFrontierSnapshot>;
   frontierConsult(projectId:string,input:{parentTaskId:string;ownerSessionId:string;capability:string;budget:number;operationId:string}):Promise<InfraFrontierConsultResult>;
+  frontierDelegate(projectId:string,input:{parentTaskId:string;ownerSessionId:string;capability:string;objective:string;acceptanceCommands:string[];budget:number;operationId:string;confirmation:'RUN_DELEGATE'}):Promise<InfraFrontierDelegateResult>;
+  frontierCancel(projectId:string,requestId:string,rationale:string):Promise<InfraFrontierDelegateAction>;
+  frontierReview(projectId:string,requestId:string,input:{ownerSessionId:string;decision:'ACCEPT'|'REWORK';rationale:string}):Promise<InfraFrontierDelegateAction>;
   getProvenance(projectId:string):Promise<InfraProvenance>;
   getInvocations(projectId:string):Promise<Page<InfraInvocation>>;
   getConsistency(projectId:string):Promise<InfraConsistency>;
@@ -31,7 +34,8 @@ const unavailable=async()=>{throw new Error('Infra Core requires the HTTP backen
 export const localInfraRepository:InfraRepository={
   getStatus:unavailable,getOverview:unavailable,getEvents:unavailable,getReplay:unavailable,
   compareReplay:unavailable,getScheduler:unavailable,getMemory:unavailable,getContext:unavailable,getBank:unavailable,
-  getFrontier:unavailable,frontierConsult:unavailable,getProvenance:unavailable,getInvocations:unavailable,getConsistency:unavailable,
+  getFrontier:unavailable,frontierConsult:unavailable,frontierDelegate:unavailable,
+  frontierCancel:unavailable,frontierReview:unavailable,getProvenance:unavailable,getInvocations:unavailable,getConsistency:unavailable,
   getOperations:unavailable,getBackups:unavailable,createBackup:unavailable,verifyBackup:unavailable,subscribe:()=>()=>{},
 };
 
@@ -49,6 +53,9 @@ export function httpInfraRepository(services:Services):InfraRepository{
     getBank:(projectId)=>services.infra.bank(projectId),
     getFrontier:(projectId)=>services.infra.frontier(projectId),
     frontierConsult:(projectId,input)=>services.infra.frontierConsult(projectId,input),
+    frontierDelegate:(projectId,input)=>services.infra.frontierDelegate(projectId,input),
+    frontierCancel:(projectId,requestId,rationale)=>services.infra.frontierCancel(projectId,requestId,rationale),
+    frontierReview:(projectId,requestId,input)=>services.infra.frontierReview(projectId,requestId,input),
     getProvenance:(projectId)=>services.infra.provenance(projectId),
     getInvocations:(projectId)=>services.infra.invocations(projectId),
     getConsistency:(projectId)=>services.infra.consistency(projectId),
