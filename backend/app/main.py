@@ -70,7 +70,7 @@ def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:st
             except asyncio.CancelledError:pass
             store.close()
 
-    api=FastAPI(title='MRLC Backend API',version='0.8.1',lifespan=lifespan)
+    api=FastAPI(title='MRLC Backend API',version='0.9.1',lifespan=lifespan)
     api.state.store=store
     api.state.infra=infra
     api.state.password=passwd
@@ -78,6 +78,7 @@ def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:st
     api.state.admin_token=configured_admin_token
     api.state.secret=signing
     api.state.artifact_dir=artifact_dir or os.getenv('MRLC_ARTIFACT_DIR','./var/artifacts')
+    api.state.backup_dir=os.getenv('MRLC_BACKUP_DIR','./var/backups')
     api.state.service_token=os.getenv('MRLC_SERVICE_TOKEN','')
     api.state.executor=runtime
     # Multiple browser origins are supported for dev/LAN/reverse-proxy access.
