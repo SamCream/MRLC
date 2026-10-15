@@ -60,13 +60,13 @@ def register(api,store:Store,runtime):
             channel=obj_or_404(store,'channel',channel_id)
             project(store,channel['projectId'],True)
             content=nonempty(body.get('content'),'content',100000)
-            oneof(body.get('responseMode','single'),('single','multi'),'responseMode')
+            response_mode=oneof(body.get('responseMode','single'),('single','multi'),'responseMode')
             ids=list_of_str(body.get('artifactIds',[]),'artifactIds')
             for aid in ids:
                 a=obj_or_404(store,'artifact',aid)
                 if a['projectId']!=channel['projectId']:bad('Attachment belongs to another project',403)
             m=dict(id=ident('msg'),channelId=channel_id,senderName='You',content=content,
-                   createdAt=now(),artifactIds=ids)
+                   createdAt=now(),artifactIds=ids,responseMode=response_mode)
             event_and_audit(store,'owner','message',m,channel['projectId'])
             # No implicit inference cost. POST /respond explicitly requests model work.
             return m
