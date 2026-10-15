@@ -59,7 +59,7 @@ def register(api,store:Store,runtime):
         with store.tx():
             p=project(store,project_id,True)
             running=[a for a in store.all('agent',project_id) if a['status']=='working']
-            outstanding=store.execute("SELECT 1 FROM jobs WHERE project_id=? AND status IN ('queued','running') LIMIT 1",(project_id,)).fetchone()
+            outstanding=store.execute("SELECT 1 FROM jobs WHERE project_id=? AND status IN ('waiting','queued','running') LIMIT 1",(project_id,)).fetchone()
             if running or outstanding:bad('Project has running or queued jobs; finish execution before archiving',409)
             p['status']='archived';p['archiveReason']=str((body or {}).get('reason') or '')[:2000]
             for a in store.all('agent',project_id):
