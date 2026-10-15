@@ -467,6 +467,53 @@ class InfraBridge:
             idempotency_key=f"decision:{decision.decision_id}:recorded",
         )
 
+    def scheduler_snapshot(self, project_id: str) -> dict[str, Any]:
+        """Project-scoped scheduler/lease view for the Infra Console.
+
+        This intentionally exposes arbitration metadata rather than duplicating the
+        product Compute page's slot/resource presentation.
+        """
+        row=self.store.conn.execute("SELECT state_json FROM scheduler_state WHERE id=1").fetchone()
+        state=json.loads(row["state_json"]) if row else {"capacity":self.scheduler.capacity,"sessions":{},"queue":[],"priority_adjustments":[]}
+        sessions=[]
+        scoped_ids=set()
+        now_ts=int(time.time())
+        for session_id,value in state.get("sessions",{}).items():
+            if value.get("project_id")!=project_id:
+                continue
+            scoped_ids.add(session_id)
+            queued_at=int(value.get("queued_at") or 0)
+            lease_started=value.get("lease_started")
+            sessions.append({
+                "sessionId":session_id,
+                "priority":int(value.get("priority") or 0),
+                "taskState":value.get("task_state"),
+                "slotState":value.get("slot_state"),
+                "yieldability":value.get("yieldability"),
+                "fencingToken":int(value.get("fencing_token") or 0),
+                "queuedAt":queued_at or None,
+                "waitSeconds":max(0,now_ts-queued_at) if queued_at else None,
+                "leaseStarted":lease_started,
+                "leaseAgeSeconds":max(0,now_ts-int(lease_started)) if lease_started else None,
+                "parkRequested":bool(value.get("park_requested")),
+                "parkCount":int(value.get("park_count") or 0),
+                "cooldownUntil":int(value.get("cooldown_until") or 0) or None,
+                "familyParent":value.get("family_parent"),
+            })
+        queue=[sid for sid in state.get("queue",[]) if sid in scoped_ids]
+        adjustments=[
+            item for item in state.get("priority_adjustments",[])
+            if item.get("session_id") in scoped_ids
+        ]
+        active=sum(item["slotState"] in {"ACTIVE","DRAINING"} for item in sessions)
+        parked=sum(item["slotState"]=="PARKED" for item in sessions)
+        queued=sum(item["slotState"] in {"QUEUED","RESERVED_FAMILY"} for item in sessions)
+        return {
+            "capacity":int(state.get("capacity") or self.scheduler.capacity),
+            "active":active,"queued":queued,"parked":parked,
+            "sessions":sessions,"queue":queue,"priorityAdjustments":adjustments,
+        }
+
     def replay(self, project_id: str):
         return replay_project(self.events.read(project_id))
 
@@ -480,7 +527,7 @@ class InfraBridge:
                 counts[name]=None
         return {
             "mode":"migrated-infra-core",
-            "database":self.database_path,
+            "database":Path(self.database_path).name,
             "projection":"objects",
             "uiEvents":"ui_events",
             "domainEvents":"events",

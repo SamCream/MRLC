@@ -52,3 +52,99 @@ export interface ProjectOverviewSnapshot {
   progressPercent: number | null; stages: {messageId: ID; title: string; verified: boolean; level: 'low'|'medium'|'high'; occurredAt: ISODateTime; taskId: ID}[];
   activeSlots: number; totalSlots: number; budget: RuntimeBudget | null; metrics: RuntimeMetrics | null; health: SystemHealth | null;
 }
+
+
+/** Infra Console contracts. These expose backend mechanisms, not duplicate product views. */
+export interface InfraStatus {
+  mode:string; database:string; projection:string; uiEvents:string; domainEvents:string;
+  counts:Record<string,number|null>;
+}
+export interface InfraEvent {
+  sequence:number; eventId:string; type:string; occurredAt:string; actorId?:string|null;
+  sessionId?:string|null; taskId?:string|null; correlationId?:string|null;
+  causationId?:string|null; payload:Record<string,unknown>;
+}
+export interface InfraOverview {
+  events:{count:number;firstSequence:number|null;lastSequence:number|null;sequenceGapCount:number};
+  scheduler:{capacity:number;active:number;queued:number;parked:number};
+  memory:{total:number;active:number;superseded:number};
+  bank:{openIssues:number;decisions:number;lessons:number;progress:number};
+  invocations:{total:number;unknown:number;failed:number;inputTokens:number;outputTokens:number};
+  consistency:{outboxTotal:number;outboxPending:number;deadLetters:number};
+  replay:{healthy:boolean;error:string|null};
+}
+export interface InfraSchedulerSession {
+  sessionId:string; priority:number; taskState:string; slotState:string; yieldability:string;
+  fencingToken:number; queuedAt:number|null; waitSeconds:number|null; leaseStarted:number|null;
+  leaseAgeSeconds:number|null; parkRequested:boolean; parkCount:number; cooldownUntil:number|null;
+  familyParent:string|null;
+}
+export interface InfraSchedulerSnapshot {
+  capacity:number; active:number; queued:number; parked:number; sessions:InfraSchedulerSession[];
+  queue:string[]; priorityAdjustments:Array<Record<string,unknown>>;
+}
+export interface InfraReplayState {
+  projects:Record<string,string>; tasks:Record<string,string>; sessions:Record<string,string>;
+  memories:Record<string,string>; issues:Record<string,string>; decisions:Record<string,string>;
+  artifacts:Record<string,string>; [key:string]:unknown;
+}
+export interface InfraMemoryItem {
+  memory_id:string; project_id:string; role_scope:string; kind:string; content:string;
+  source_event_refs:string[]; valid_from:string; confidence:number; status:string; valid_to:string|null;
+}
+export interface InfraContextSnapshot {
+  id:string; agentId?:string|null; taskId?:string|null; channelId?:string|null;
+  projection?:string|null; artifactCount:number; taskRevision?:string|null; createdAt?:string|null;
+  providerCheckpointId?:string|null;
+}
+export interface InfraContextView {
+  snapshots:InfraContextSnapshot[];
+  historySessions:Array<{session_id:string;entry_count:number;first_at:string;last_at:string}>;
+}
+export interface InfraBankIssue {
+  issue_id:string;project_id:string;title:string;blocking:string;decision_owner:string;
+  auto_decidable:number|boolean;reversible:number|boolean;status:string;resolved_by:string|null;
+}
+export interface InfraBankDecision {
+  decision_id:string;project_id:string;title:string;authority:string;risk:string;
+  rationale:string;supersedes:string|null;status:string;
+}
+export interface InfraBankLesson { lesson_id:string;project_id:string;title:string;source_refs:string[]; }
+export interface InfraBankProgress { progress_id:string;project_id:string;milestone:string;status:string;artifact_refs:string[]; }
+export interface InfraBankView {
+  issues:InfraBankIssue[]; decisions:InfraBankDecision[]; lessons:InfraBankLesson[]; progress:InfraBankProgress[];
+}
+export interface InfraEvidenceNode {
+  stage:string;status:string;ref?:string|null;summary?:string|null;source?:string|null;
+}
+export interface InfraEvidenceChain {
+  request_id:string;relation_id:string;run_state:string;chain_state:string;nodes:InfraEvidenceNode[];
+}
+export interface InfraProvenance {
+  project_id:string;stages:string[];chains:InfraEvidenceChain[];
+}
+export interface InfraInvocation {
+  idempotency_key:string;model:string;mode:string;invocation_id:string;
+  fallback_reason:string|null;status:string;provider_request_id:string|null;
+  usage_input:number;usage_output:number;
+}
+export interface InfraConsistency {
+  aggregates:Array<{aggregate_type:string;aggregate_id:string;state:string;version:number}>;
+  outbox:Array<{message_id:string;aggregate_type:string;aggregate_id:string;aggregate_version:number;
+    event_type:string;attempt_count:number;published_at:number|null;last_error:string|null;
+    dead_letter_at:number|null;dead_letter_reason:string|null}>;
+  inboxCount:number;
+  leases:Array<{resource_id:string;holder_id:string;fencing_token:number;expires_at:number}>;
+  sagas:Array<{sagaId:string;sagaType:string;state:string;payload:Record<string,unknown>}>;
+}
+export interface InfraOperations {
+  continuity:null|{checkpointId:string;sessionId:string;client:string;gitBranch:string|null;
+    gitHeadSha:string|null;gitDirty:boolean;verificationStatus:string|null;blockers:string[];
+    nextSteps:string[];createdAt:string};
+  mcp:{tools:Array<{toolId:string;name:string;version:string;credentialConfigured:boolean}>;
+    accessAudit:Array<{toolId:string;roleId:string;result:string;recordedAt:string}>};
+  skills:Array<{skillId:string;version:string;capabilities:string[]}>;
+  workers:Array<{handle:string;adapter:string;session_id:string;task_id:string;fencing_token:number;
+    status:string;checkpoint_ref:string|null}>;
+  backup:{tracked:boolean;reason:string};
+}

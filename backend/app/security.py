@@ -177,7 +177,7 @@ def login_with_token(request:Request,response:Response,token:str):
 
 READ_PERMISSIONS={
     'projects':'projects.read','tasks':'tasks.read','channels':'workspace.read','artifacts':'artifacts.read',
-    'approvals':'approvals.read','runtime':'runtime.read','roles':'roles.read','agents':'agents.read','system':'system.read','logs':'logs.read','settings':'system.read'
+    'approvals':'approvals.read','runtime':'runtime.read','roles':'roles.read','agents':'agents.read','system':'system.read','logs':'logs.read','settings':'system.read','infra':'system.read'
 }
 WRITE_PERMISSIONS={
     'projects':'projects.write','tasks':'tasks.write','channels':'workspace.write','artifacts':'artifacts.write',

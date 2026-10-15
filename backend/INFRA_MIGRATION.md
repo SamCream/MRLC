@@ -2,7 +2,7 @@
 
 This document records the backend-only migration from the Phase 8.1 FastAPI backend to the mature Infra/Runtime core recovered from `Samera2022/MRLC@feat/epic-0-infra-foundation`.
 
-The React application is intentionally unchanged. Existing `/api/v1` product routes remain the compatibility/application API.
+The existing Control Room pages remain unchanged. A separate **Infra Core console** now lives beside them and uses additive read-model routes; existing `/api/v1` product routes remain the compatibility/application API.
 
 ## Authority model
 
@@ -69,13 +69,21 @@ The Phase 8.1 content-addressed disk store is retained instead of regressing art
 
 They intentionally remain separate because they have different contracts.
 
-## Additive backend-only APIs
+## Additive Infra APIs
 
-These routes do not require React changes:
+These routes support the separate Infra Core console without changing existing product-page contracts:
 
 - `GET /api/v1/infra/status`
 - `GET /api/v1/projects/{projectId}/infra/events`
 - `GET /api/v1/projects/{projectId}/infra/replay`
+- `GET /api/v1/projects/{projectId}/infra/overview`
+- `GET /api/v1/projects/{projectId}/infra/scheduler`
+- `GET /api/v1/projects/{projectId}/infra/context`
+- `GET /api/v1/projects/{projectId}/infra/bank`
+- `GET /api/v1/projects/{projectId}/infra/provenance`
+- `GET /api/v1/projects/{projectId}/infra/invocations`
+- `GET /api/v1/projects/{projectId}/infra/consistency`
+- `GET /api/v1/projects/{projectId}/infra/operations`
 - `GET/POST /api/v1/projects/{projectId}/infra/memory`
 - `POST /api/v1/projects/{projectId}/infra/memory/{memoryId}/supersede`
 - `GET/POST /api/v1/projects/{projectId}/infra/bank/issues`
@@ -86,9 +94,11 @@ These routes do not require React changes:
 
 Project-scoped writes pass through the existing FastAPI authorization middleware.
 
-## Not activated through the current UI
+## Infra Console scope
 
-The following mature legacy backend modules are migrated but intentionally not wired into the current React interaction model yet:
+The React application now has a dedicated Infra navigation domain with Overview, Events & Replay, Scheduler & Leases, Memory & Context, Provenance, Invocations, and Consistency & Recovery. These pages intentionally avoid duplicating Control Room task, chat, artifact, GPU and provider-health views.
+
+The following mature legacy backend modules remain intentionally **not** wired into the current React interaction model:
 
 - legacy Console command API and Console web server;
 - Dev group-chat ConversationService as a replacement for the current channel UI;

@@ -1,6 +1,6 @@
 # MRLC Backend Status — 0.9 Infra Migration (2026-10-15)
 
-The current backend keeps the Phase 8.1 React/FastAPI HTTP contract while migrating the mature legacy MRLC Infra/Runtime implementation underneath it. The React UI is unchanged in this migration.
+The current backend keeps the existing Control Room React/FastAPI contract while running the mature legacy MRLC Infra/Runtime implementation underneath it. A separate Infra Core console has now been added without changing the existing Control Room pages.
 
 ## Implemented and connected
 
@@ -26,9 +26,9 @@ See `backend/INFRA_MIGRATION.md` for the authority boundaries and compatibility 
 - The new RBAC/account/token implementation. The legacy Console plaintext identity-token file is not restored.
 - The disk-backed content-addressed Artifact store rather than storing artifact bytes as SQLite BLOBs.
 - The current FastAPI server as the only product HTTP entry point.
-- Current React/API contracts and UI behavior.
+- Existing Control Room React/API contracts and UI behavior; Infra Core is a separate navigation domain.
 
-## Migrated but not yet activated through the current React UI
+## Migrated but not activated as Control Room workflows
 
 These capabilities exist in backend code but are not silently substituted for current UI workflows:
 
@@ -47,7 +47,7 @@ They should be exposed through typed FastAPI endpoints when their product/API co
 - Physical GPU lease/control is not claimed; scheduler leases are logical runtime leases.
 - Distributed multi-node leader election and external transactional database support are not implemented.
 - SSO/federation, encryption-at-rest and production key-management integration remain outside the current scope.
-- Browser E2E for the newly migrated backend-only endpoints has not been added because this migration intentionally does not modify the UI.
+- Browser E2E for the new Infra Console is still pending; backend read-model tests plus frontend typecheck/contracts/build are the current gate.
 
 ## Verification
 

@@ -1,0 +1,35 @@
+name: infra-console-ui
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/infra-console-ui.yml"
+  push:
+    branches:
+      - "main"
+      - "feat/infra-console-ui"
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/infra-console-ui.yml"
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: cp backend/.env.example backend/.env
+      - run: npm run check
+      - run: npm run test:all
+      - run: npm run build

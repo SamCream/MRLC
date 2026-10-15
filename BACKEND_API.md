@@ -1,4 +1,4 @@
-# MRLC v0.8.1 — executable backend API contract
+# MRLC v0.9 — executable backend API contract
 
 **Authority:** `backend/app/`; the server's OpenAPI file is `backend/openapi.json`. All paths below are relative to the **same-origin** `/api/v1` root. Business decisions, validation, project isolation, audit and persistence happen on the backend. Browser-side filtering/layout is presentation only.
 
@@ -68,6 +68,24 @@
 - `GET /system/logs?projectId=...&q=...&level=...&source=...&since=...&until=...&cursor=...&limit=...` → `{items:AuditLog[],nextCursor:string|null}`. `GET/POST /users/me/log-views`, `PATCH/DELETE /users/me/log-views/{id}` store views on the server.
 - `POST /system/logs/export` body `{filter:{...},format:"jsonl"|"csv"}` → `{exportId,downloadUrl,expiresAt}`, authenticated download via `GET /system/logs/exports/{exportId}`. Audit bundle format explicitly not implemented (501).
 - `GET /events` → cookie-authenticated `text/event-stream`; SSE event `data:` JSON `{id,type,projectId?,occurredAt,payload}` and replay via `Last-Event-ID`.
+
+## Infra Core console read models
+
+These endpoints back the separate Infra navigation domain. They intentionally expose mechanism-level state rather than duplicating Control Room task/chat/compute/artifact views.
+
+- `GET /infra/status` → `{mode,database,projection,uiEvents,domainEvents,counts}`. Requires authenticated `system.read`; `database` is a filename only, never an absolute server path.
+- `GET /projects/{id}/infra/overview` → summary of EventStore sequence health, replay status, scheduler lease counts, Memory counts, Project Bank counts, Gateway invocation counts and consistency outbox/dead-letter counts.
+- `GET /projects/{id}/infra/events` → `Page<InfraEvent>`; every item contains `sequence,eventId,type,occurredAt,actorId,sessionId,taskId,correlationId,causationId,payload`.
+- `GET /projects/{id}/infra/replay` → deterministic replay projection maps for projects/tasks/sessions/memories/issues/decisions/artifacts.
+- `GET /projects/{id}/infra/scheduler` → `{capacity,active,queued,parked,sessions,queue,priorityAdjustments}`; session rows expose arbitration metadata such as priority, slot/task state, fencing token, queue/lease age and park state. It does **not** return task titles, GPU usage or token throughput.
+- `GET /projects/{id}/infra/context` → `{snapshots,historySessions}`; ContextSnapshot metadata plus History persistence counts only. Raw Workspace chat content is deliberately not mirrored.
+- `GET /projects/{id}/infra/bank` → raw ISS/DEC/LES/PRG record metadata: `{issues,decisions,lessons,progress}`.
+- `GET /projects/{id}/infra/provenance` → Evidence Graph `{project_id,stages,chains}`, where each chain reports persisted requirement/task/delegation/invocation/artifact/tests/review/commit nodes and `PRESENT/PENDING/MISSING/FAILED/NOT_REACHED` state.
+- `GET /projects/{id}/infra/invocations` → `Page<InfraInvocation>` from the Model Gateway ledger, including idempotency key, invocation/provider request IDs, model/mode, status, fallback reason and reported token usage.
+- `GET /projects/{id}/infra/consistency` → project-scoped aggregates, transactional outbox, linked inbox receipt count, project scheduler-linked leases and project-tagged Sagas.
+- `GET /projects/{id}/infra/operations` → continuity checkpoint, project-eligible MCP tools/access audit, Skills, WorkerRun metadata and explicit backup-registry capability state. Backup/restore implementation is not presented as execution history because no persistent backup-run registry exists yet.
+
+Existing write routes for evidence-backed Memory and Project Bank remain documented in `backend/INFRA_MIGRATION.md`. Project-scoped Infra routes inherit the normal project permission boundary.
 
 ## What is still outside this version
 

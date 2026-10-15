@@ -5,12 +5,15 @@ No current React page depends on these routes; they are intentionally additive.
 from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime, timezone
+import json
+import time
 from typing import Any
 from fastapi import Depends
 from .common import logged_in, page, project, bad, nonempty, list_of_str, oneof
 from .storage import ident
 from infra.memory import MemoryItem, EvidenceItem
 from infra.project_bank import Issue, Decision, Lesson, Progress
+from infra.evidence_graph import evidence_chains
 
 
 def register(api,store,runtime):
@@ -159,3 +162,199 @@ def register(api,store,runtime):
         )
         with store.tx():core.record_progress(progress,actor_id=principal.id)
         return asdict(progress)
+
+    @api.get('/api/v1/projects/{project_id}/infra/overview')
+    def infra_overview(project_id:str,_:Any=Depends(logged_in)):
+        project(store,project_id)
+        event_row=store.execute(
+            "SELECT COUNT(*) count,MIN(sequence) first_sequence,MAX(sequence) last_sequence "
+            "FROM events WHERE project_id=?",(project_id,)
+        ).fetchone()
+        event_count=int(event_row['count'] or 0)
+        first_sequence=event_row['first_sequence'];last_sequence=event_row['last_sequence']
+        expected=(int(last_sequence)-int(first_sequence)+1) if first_sequence is not None and last_sequence is not None else 0
+        memory=store.execute(
+            "SELECT COUNT(*) total,SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) active,"
+            "SUM(CASE WHEN status='superseded' THEN 1 ELSE 0 END) superseded "
+            "FROM memories WHERE project_id=?",(project_id,)
+        ).fetchone()
+        invocations=store.execute(
+            "SELECT COUNT(*) total,"
+            "SUM(CASE WHEN status='UNKNOWN' THEN 1 ELSE 0 END) unknown_count,"
+            "SUM(CASE WHEN status='FAILED' THEN 1 ELSE 0 END) failed_count,"
+            "SUM(usage_input) input_tokens,SUM(usage_output) output_tokens "
+            "FROM gateway_invocations WHERE project_id=?",(project_id,)
+        ).fetchone()
+        bank={
+            'openIssues':int(store.execute(
+                "SELECT COUNT(*) FROM bank_issues WHERE project_id=? AND status NOT IN ('RESOLVED','WONT_FIX','DUPLICATE')",
+                (project_id,)).fetchone()[0]),
+            'decisions':int(store.execute("SELECT COUNT(*) FROM bank_decisions WHERE project_id=?",(project_id,)).fetchone()[0]),
+            'lessons':int(store.execute("SELECT COUNT(*) FROM bank_lessons WHERE project_id=?",(project_id,)).fetchone()[0]),
+            'progress':int(store.execute("SELECT COUNT(*) FROM bank_progress WHERE project_id=?",(project_id,)).fetchone()[0]),
+        }
+        scheduler=core.scheduler_snapshot(project_id)
+        outbox=store.execute(
+            "SELECT COUNT(*) total,"
+            "SUM(CASE WHEN published_at IS NULL AND dead_letter_at IS NULL THEN 1 ELSE 0 END) pending,"
+            "SUM(CASE WHEN dead_letter_at IS NOT NULL THEN 1 ELSE 0 END) dead_letters "
+            "FROM consistency_outbox WHERE project_id=?",(project_id,)
+        ).fetchone()
+        replay_ok=True
+        replay_error=None
+        try:
+            core.replay(project_id)
+        except Exception as exc:
+            replay_ok=False;replay_error=str(exc)[:500]
+        return {
+            'events':{'count':event_count,'firstSequence':first_sequence,'lastSequence':last_sequence,
+                      'sequenceGapCount':max(0,expected-event_count)},
+            'scheduler':{'capacity':scheduler['capacity'],'active':scheduler['active'],
+                         'queued':scheduler['queued'],'parked':scheduler['parked']},
+            'memory':{'total':int(memory['total'] or 0),'active':int(memory['active'] or 0),
+                      'superseded':int(memory['superseded'] or 0)},
+            'bank':bank,
+            'invocations':{'total':int(invocations['total'] or 0),'unknown':int(invocations['unknown_count'] or 0),
+                           'failed':int(invocations['failed_count'] or 0),
+                           'inputTokens':int(invocations['input_tokens'] or 0),
+                           'outputTokens':int(invocations['output_tokens'] or 0)},
+            'consistency':{'outboxTotal':int(outbox['total'] or 0),'outboxPending':int(outbox['pending'] or 0),
+                           'deadLetters':int(outbox['dead_letters'] or 0)},
+            'replay':{'healthy':replay_ok,'error':replay_error},
+        }
+
+    @api.get('/api/v1/projects/{project_id}/infra/scheduler')
+    def infra_scheduler(project_id:str,_:Any=Depends(logged_in)):
+        project(store,project_id)
+        return core.scheduler_snapshot(project_id)
+
+    @api.get('/api/v1/projects/{project_id}/infra/context')
+    def infra_context(project_id:str,_:Any=Depends(logged_in)):
+        project(store,project_id)
+        snapshots=store.execute(
+            "SELECT body FROM objects WHERE kind='contextSnapshot' AND project_id=? ORDER BY rowid DESC LIMIT 100",
+            (project_id,)
+        ).fetchall()
+        items=[]
+        for row in snapshots:
+            value=json.loads(row['body'])
+            items.append({
+                'id':value.get('id'),'agentId':value.get('agentId'),'taskId':value.get('taskId'),
+                'channelId':value.get('channelId'),'projection':value.get('projection'),
+                'artifactCount':len(value.get('artifactIds') or []),
+                'taskRevision':value.get('taskRevision'),'createdAt':value.get('createdAt'),
+                'providerCheckpointId':value.get('providerCheckpointId'),
+            })
+        histories=store.execute(
+            "SELECT session_id,COUNT(*) entry_count,MIN(occurred_at) first_at,MAX(occurred_at) last_at "
+            "FROM history WHERE project_id=? GROUP BY session_id ORDER BY last_at DESC",(project_id,)
+        ).fetchall()
+        return {'snapshots':items,'historySessions':[dict(row) for row in histories]}
+
+    @api.get('/api/v1/projects/{project_id}/infra/bank')
+    def infra_bank(project_id:str,_:Any=Depends(logged_in)):
+        project(store,project_id)
+        issues=[dict(row) for row in store.execute(
+            "SELECT * FROM bank_issues WHERE project_id=? ORDER BY rowid DESC",(project_id,)).fetchall()]
+        decisions=[dict(row) for row in store.execute(
+            "SELECT * FROM bank_decisions WHERE project_id=? ORDER BY rowid DESC",(project_id,)).fetchall()]
+        lessons=[]
+        for row in store.execute("SELECT * FROM bank_lessons WHERE project_id=? ORDER BY rowid DESC",(project_id,)).fetchall():
+            value=dict(row);value['source_refs']=list(filter(None,str(value.get('source_refs') or '').split('\n')));lessons.append(value)
+        progress=[]
+        for row in store.execute("SELECT * FROM bank_progress WHERE project_id=? ORDER BY rowid DESC",(project_id,)).fetchall():
+            value=dict(row);value['artifact_refs']=list(filter(None,str(value.get('artifact_refs') or '').split('\n')));progress.append(value)
+        return {'issues':issues,'decisions':decisions,'lessons':lessons,'progress':progress}
+
+    @api.get('/api/v1/projects/{project_id}/infra/provenance')
+    def infra_provenance(project_id:str,_:Any=Depends(logged_in)):
+        project(store,project_id)
+        return evidence_chains(store.conn,project_id)
+
+    @api.get('/api/v1/projects/{project_id}/infra/invocations')
+    def infra_invocations(project_id:str,_:Any=Depends(logged_in)):
+        project(store,project_id)
+        rows=store.execute(
+            "SELECT idempotency_key,model,mode,invocation_id,fallback_reason,status,"
+            "provider_request_id,usage_input,usage_output FROM gateway_invocations "
+            "WHERE project_id=? ORDER BY rowid DESC LIMIT 200",(project_id,)
+        ).fetchall()
+        return page([dict(row) for row in rows])
+
+    @api.get('/api/v1/projects/{project_id}/infra/consistency')
+    def infra_consistency(project_id:str,_:Any=Depends(logged_in)):
+        project(store,project_id)
+        outbox=[dict(row) for row in store.execute(
+            "SELECT message_id,aggregate_type,aggregate_id,aggregate_version,event_type,"
+            "attempt_count,published_at,last_error,dead_letter_at,dead_letter_reason "
+            "FROM consistency_outbox WHERE project_id=? ORDER BY rowid DESC LIMIT 100",(project_id,)
+        ).fetchall()]
+        aggregates=[dict(row) for row in store.execute(
+            "SELECT aggregate_type,aggregate_id,state,version FROM consistency_aggregates "
+            "WHERE project_id=? ORDER BY rowid DESC LIMIT 100",(project_id,)
+        ).fetchall()]
+        scheduler=core.scheduler_snapshot(project_id)
+        session_ids={item['sessionId'] for item in scheduler['sessions']}
+        leases=[]
+        if session_ids:
+            placeholders=','.join('?' for _ in session_ids)
+            rows=store.execute(
+                f"SELECT resource_id,holder_id,fencing_token,expires_at FROM consistency_leases "
+                f"WHERE holder_id IN ({placeholders}) ORDER BY expires_at DESC",tuple(session_ids)
+            ).fetchall()
+            leases=[dict(row) for row in rows]
+        sagas=[]
+        for row in store.execute("SELECT saga_id,saga_type,state,payload FROM consistency_sagas ORDER BY rowid DESC LIMIT 200").fetchall():
+            payload=json.loads(row['payload'])
+            scoped=payload.get('project_id') or payload.get('projectId')
+            if scoped==project_id:
+                sagas.append({'sagaId':row['saga_id'],'sagaType':row['saga_type'],'state':row['state'],'payload':payload})
+        inbox_count=0
+        if outbox:
+            message_ids=[item['message_id'] for item in outbox]
+            placeholders=','.join('?' for _ in message_ids)
+            inbox_count=int(store.execute(
+                f"SELECT COUNT(*) FROM consistency_inbox WHERE message_id IN ({placeholders})",tuple(message_ids)
+            ).fetchone()[0])
+        return {'aggregates':aggregates,'outbox':outbox,'inboxCount':inbox_count,
+                'leases':leases,'sagas':sagas}
+
+    @api.get('/api/v1/projects/{project_id}/infra/operations')
+    def infra_operations(project_id:str,_:Any=Depends(logged_in)):
+        project(store,project_id)
+        checkpoint=core.continuity.latest(project_id)
+        tools=[]
+        for row in store.execute("SELECT tool_id,name,roles,projects,version,credential_ref FROM mcp_tools ORDER BY tool_id").fetchall():
+            projects=set(filter(None,str(row['projects']).split(',')))
+            if projects and project_id not in projects:continue
+            tools.append({'toolId':row['tool_id'],'name':row['name'],'version':row['version'],
+                          'credentialConfigured':bool(row['credential_ref'])})
+        skills=[]
+        for row in store.execute("SELECT skill_id,version,capabilities,roles,projects FROM skills ORDER BY skill_id,version").fetchall():
+            projects=set(filter(None,str(row['projects']).split(',')))
+            if projects and project_id not in projects:continue
+            skills.append({'skillId':row['skill_id'],'version':row['version'],
+                           'capabilities':list(filter(None,str(row['capabilities']).split(',')))})
+        workers=[dict(row) for row in store.execute(
+            "SELECT wr.handle,wr.adapter,wr.session_id,wr.task_id,wr.fencing_token,wr.status,"
+            "wr.checkpoint_ref FROM worker_runs wr JOIN sessions s ON s.session_id=wr.session_id "
+            "WHERE s.project_id=? ORDER BY wr.rowid DESC LIMIT 100",(project_id,)
+        ).fetchall()]
+        mcp_audit=[{
+            'toolId':entry.tool_id,'roleId':entry.role_id,'result':entry.result,
+            'recordedAt':entry.recorded_at.isoformat(),
+        } for entry in core.mcp.access_log(project_id)[-100:]]
+        return {
+            'continuity':None if checkpoint is None else {
+                'checkpointId':checkpoint.checkpoint_id,'sessionId':checkpoint.session_id,
+                'client':checkpoint.client,'gitBranch':checkpoint.git_branch,
+                'gitHeadSha':checkpoint.git_head_sha,'gitDirty':checkpoint.git_dirty,
+                'verificationStatus':checkpoint.verification_status,
+                'blockers':list(checkpoint.blockers),'nextSteps':list(checkpoint.next_steps),
+                'createdAt':checkpoint.created_at.isoformat(),
+            },
+            'mcp':{'tools':tools,'accessAudit':mcp_audit},
+            'skills':skills,'workers':workers,
+            'backup':{'tracked':False,'reason':'Backup/restore is implemented but has no persistent execution registry yet.'},
+        }
+

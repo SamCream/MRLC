@@ -1,10 +1,24 @@
 import type { CreateRole, UpdateRole, UpdateProject, AgentAssignment, RoleTransition } from '../data/organizationRepository';
 import { ApiClient, idSegment as id, query } from './client';
-import type { Project, Task, NewTask, Agent, RoleTemplate, Channel, Message, Artifact, ArtifactVersion, EvidenceLink, Approval, ApprovalRecord, ApprovalDecisionInput, ComputeSlot, RuntimeQueueItem, RuntimeMetrics, RuntimeBudget, RuntimeSession, AuditLog, Page, SystemHealth, SystemTopology, InfrastructureNode, Accelerator, LogFilter, LogSavedView, LogExportRequest, LogExportJob, ProjectRuntimeSettings, ProjectOverviewSnapshot, AppearanceSettings, AuthAccount, LoginTokenStatus, LoginTokenResult } from '../domain/models';
+import type { Project, Task, NewTask, Agent, RoleTemplate, Channel, Message, Artifact, ArtifactVersion, EvidenceLink, Approval, ApprovalRecord, ApprovalDecisionInput, ComputeSlot, RuntimeQueueItem, RuntimeMetrics, RuntimeBudget, RuntimeSession, AuditLog, Page, SystemHealth, SystemTopology, InfrastructureNode, Accelerator, LogFilter, LogSavedView, LogExportRequest, LogExportJob, ProjectRuntimeSettings, ProjectOverviewSnapshot, AppearanceSettings, AuthAccount, LoginTokenStatus, LoginTokenResult, InfraStatus, InfraOverview, InfraEvent, InfraReplayState, InfraSchedulerSnapshot, InfraMemoryItem, InfraContextView, InfraBankView, InfraProvenance, InfraInvocation, InfraConsistency, InfraOperations } from '../domain/models';
 
 /** Candidate REST surface; paths must be negotiated with the real backend. */
 export function createServices(http: ApiClient) {
   return {
+    infra: {
+      status:()=>http.get<InfraStatus>('/api/v1/infra/status'),
+      overview:(projectId:string)=>http.get<InfraOverview>(`/api/v1/projects/${id(projectId)}/infra/overview`),
+      events:(projectId:string)=>http.get<Page<InfraEvent>>(`/api/v1/projects/${id(projectId)}/infra/events`),
+      replay:(projectId:string)=>http.get<InfraReplayState>(`/api/v1/projects/${id(projectId)}/infra/replay`),
+      scheduler:(projectId:string)=>http.get<InfraSchedulerSnapshot>(`/api/v1/projects/${id(projectId)}/infra/scheduler`),
+      memory:(projectId:string,roleId='shared')=>http.get<Page<InfraMemoryItem>>(`/api/v1/projects/${id(projectId)}/infra/memory${query({roleId})}`),
+      context:(projectId:string)=>http.get<InfraContextView>(`/api/v1/projects/${id(projectId)}/infra/context`),
+      bank:(projectId:string)=>http.get<InfraBankView>(`/api/v1/projects/${id(projectId)}/infra/bank`),
+      provenance:(projectId:string)=>http.get<InfraProvenance>(`/api/v1/projects/${id(projectId)}/infra/provenance`),
+      invocations:(projectId:string)=>http.get<Page<InfraInvocation>>(`/api/v1/projects/${id(projectId)}/infra/invocations`),
+      consistency:(projectId:string)=>http.get<InfraConsistency>(`/api/v1/projects/${id(projectId)}/infra/consistency`),
+      operations:(projectId:string)=>http.get<InfraOperations>(`/api/v1/projects/${id(projectId)}/infra/operations`),
+    },
     auth:{
       me:()=>http.get<AuthAccount>('/api/v1/auth/me'),
       tokenStatus:()=>http.get<LoginTokenStatus>('/api/v1/auth/me/token'),
