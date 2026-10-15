@@ -38,10 +38,10 @@ def main() -> None:
 
         page.get_by_role("button",name=re.compile("Switch to Infra Core")).click()
         expect(page.get_by_role("heading",name="Infra Overview")).to_be_visible()
-        infra_nav=page.locator(".sidebar .nav-item").all_inner_texts()
+        infra_nav=["".join(text.split()) for text in page.locator(".sidebar .nav-item").all_inner_texts()]
         assert infra_nav==[
-            "⌂Overview","≡Events & Replay","⇄Scheduler & Leases","◇Memory & Context",
-            "⛓Provenance","↗Invocations","⌁Consistency & Recovery",
+            "⌂Overview","≡Events&Replay","⇄Scheduler&Leases","◇Memory&Context",
+            "⛓Provenance","↗Invocations","⌁Consistency&Recovery",
         ],infra_nav
         assert "Tasks" not in "\n".join(infra_nav)
 
