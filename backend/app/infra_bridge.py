@@ -527,7 +527,7 @@ class InfraBridge:
                 counts[name]=None
         return {
             "mode":"migrated-infra-core",
-            "database":self.database_path,
+            "database":Path(self.database_path).name,
             "projection":"objects",
             "uiEvents":"ui_events",
             "domainEvents":"events",
