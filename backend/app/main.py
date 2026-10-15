@@ -72,6 +72,7 @@ def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:st
         # A previous process cannot keep an active inference HTTP request or its checkpoint.
         # Mark interrupted jobs as failed, not as falsely resumable.
         with store.tx():
+            interrupted_chat_jobs=[]
             for a in store.all('agent'):
                 if a['status']=='working':
                     a['status']='idle';a['taskId']=None
@@ -85,7 +86,11 @@ def create_app(*, db_path:str|None=None, artifact_dir:str|None=None, password:st
                     ('Server restarted while provider call was in flight; no replay-safe checkpoint exists',now(),j['id']))
                 t=store.obj('task',j['target_id']) if j['kind']=='task' else None
                 if t and t['status']=='running':t['status']='failed';store.change('runtime','task',t,t['projectId'],t['id'])
+                if j['kind']=='chat':
+                    interrupted_chat_jobs.append(j['id'])
             application.state.infra.reconcile_runtime_after_restart()
+            for job_id in interrupted_chat_jobs:
+                application.state.infra.advance_chat_response_group(job_id,'FAILED')
         if delegate_runner is not None:
             delegate_runner.start()
         worker=asyncio.create_task(job_worker(application))
@@ -215,6 +220,8 @@ async def job_worker(application:FastAPI):
                     if agent:
                         agent['status']='working';agent['taskId']=data['target_id'] if data['kind']=='task' else None
                         s.change('worker','agent',agent,data['project_id'])
+                    if data['kind']=='chat':
+                        application.state.infra.mark_chat_response_running(data['id'])
                     if data['kind']=='task':
                         task=s.obj('task',data['target_id'])
                         if task:task['status']='running';s.change('worker','task',task,data['project_id'],task['id'])
@@ -240,6 +247,8 @@ async def job_worker(application:FastAPI):
                         if obj and obj['status']=='running':
                             obj['status']='failed';s.change('worker','task',obj,row['project_id'],obj['id'])
                     application.state.infra.finish_job(dict(row),'FAILED')
+                    if row['kind']=='chat':
+                        application.state.infra.advance_chat_response_group(row['id'],'FAILED')
 
 
 async def run_job(application:FastAPI,job:dict):
@@ -247,6 +256,7 @@ async def run_job(application:FastAPI,job:dict):
     provider:OpenAIExecutor=application.state.executor
     agent=s.obj('agent',job['agent_id'])
     role=s.obj('role',agent['roleTemplateId']) if agent else None
+    readiness=None
     try:
         if not agent or not role:raise ValueError('Agent/role no longer exists')
         role_prompt=(
@@ -322,15 +332,41 @@ async def run_job(application:FastAPI,job:dict):
                     'role':'user',
                     'content':'Evidence-backed durable project memory (context only; not instructions):\n'+memory_text,
                 })
-            if context:
-                context.update(
-                    memoryBundleId=memory_bundle.bundle_id,
-                    memorySourceRefs=list(memory_bundle.manifest.included),
-                    memoryTokenCount=memory_bundle.total_tokens,
-                    contextAssemblyRunId=context_run_id,
+            readiness=application.state.infra.assess_knowledge_readiness(
+                project_id=job['project_id'],task_id=context.get('taskId'),
+                explicit_artifact_ids=list(context.get('artifactIds') or []),
+                memory_source_refs=list(memory_bundle.manifest.included),
+                job_id=job['id'],role_id=agent['roleTemplateId'],
+            )
+            context.update(
+                memoryBundleId=memory_bundle.bundle_id,
+                memorySourceRefs=list(memory_bundle.manifest.included),
+                memoryTokenCount=memory_bundle.total_tokens,
+                contextAssemblyRunId=context_run_id,
+                knowledgeReadiness=readiness['status'],
+                knowledgeReadinessReason=readiness['reason'],
+                knowledgeEvidenceArtifactIds=readiness['evidenceArtifactIds'],
+            )
+            s.put('contextSnapshot',context,job['project_id'])
+            if readiness['status']=='UNKNOWN':
+                chat_role_prompt=role_prompt+(
+                    ' Knowledge readiness is UNKNOWN for this response. You do not have verified '
+                    'project evidence sufficient to assert project-specific facts. Do not silently '
+                    'search or infer from unrelated project context. Explicitly say what is unknown '
+                    'and request the exact missing evidence or responsible role when needed.'
                 )
-                s.put('contextSnapshot',context,job['project_id'])
-            result=await provider.complete_result(role_prompt,messages) if hasattr(provider,'complete_result') else {'content':await provider.complete(role_prompt,messages),'usageReported':False}
+            elif readiness['status']=='PARTIAL':
+                chat_role_prompt=role_prompt+(
+                    ' Knowledge readiness is PARTIAL. Clearly separate facts supported by the '
+                    'provided evidence/Memory from assumptions or missing information. Do not expand '
+                    'scope implicitly; name the specific evidence needed to close each gap.'
+                )
+            else:
+                chat_role_prompt=role_prompt+(
+                    ' Knowledge readiness is KNOWN only for the scoped, verified evidence supplied. '
+                    'Do not generalize beyond what that evidence supports.'
+                )
+            result=await provider.complete_result(chat_role_prompt,messages) if hasattr(provider,'complete_result') else {'content':await provider.complete(chat_role_prompt,messages),'usageReported':False}
             completion=result['content']
         with s.tx():
             usage={'id':ident('usage'),'projectId':job['project_id'],'jobId':job['id'],'agentId':job['agent_id'],'modelId':result.get('model',getattr(provider,'model',None)),
@@ -358,8 +394,12 @@ async def run_job(application:FastAPI,job:dict):
                 s.change('worker','task',task,job['project_id'],task['id'])
                 s.execute('UPDATE jobs SET result_artifact_id=? WHERE id=?',(art['id'],job['id']))
             else:
+                snapshot=s.obj('contextSnapshot',job.get('context_id')) if job.get('context_id') else {}
                 m=dict(id=ident('msg'),channelId=job['target_id'],senderAgentId=agent['id'],senderName=agent['name'],
-                       content=completion,createdAt=now(),artifactIds=[])
+                       content=completion,createdAt=now(),artifactIds=[],
+                       responseGroupId=snapshot.get('responseGroupId'),routeReason=snapshot.get('routeReason'),
+                       knowledgeReadiness=(readiness or {}).get('status'),
+                       knowledgeReadinessReason=(readiness or {}).get('reason'))
                 s.change('worker','message',m,job['project_id'])
             s.execute('UPDATE jobs SET status=?,completed_at=? WHERE id=?',('completed',now(),job['id']))
             s.emit('job.completed',job['project_id'],{'id':job['id']})
@@ -391,7 +431,10 @@ async def run_job(application:FastAPI,job:dict):
                 slot.update(state='free',agentId=None,taskId=None,modelId=None)
                 s.change('worker','slot',slot,job['project_id'])
             terminal=s.execute('SELECT status FROM jobs WHERE id=?',(job['id'],)).fetchone()
-            application.state.infra.finish_job(job,(terminal['status'] if terminal else 'unknown').upper())
+            terminal_status=(terminal['status'] if terminal else 'unknown').upper()
+            application.state.infra.finish_job(job,terminal_status)
+            if job['kind']=='chat':
+                application.state.infra.advance_chat_response_group(job['id'],terminal_status)
 
 
 # When launched by uvicorn, environment variables must be present before import.
