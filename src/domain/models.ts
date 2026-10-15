@@ -5,11 +5,12 @@ export type TaskStatus = 'todo' | 'queued' | 'running' | 'blocked' | 'review' | 
 export type AgentStatus = 'idle' | 'working' | 'parked' | 'paused' | 'failed' | 'archived';
 export type ApprovalDecision = 'approve' | 'reject' | 'reduce_scope' | 'request_details';
 export type EvidenceStatus = 'missing' | 'partial' | 'complete' | 'verified';
-export interface Project { id: ID; name: string; description: string; status: 'running' | 'blocked' | 'idle' | 'archived'; progress: number; createdAt?: ISODateTime; }
+export interface Project { id: ID; name: string; description: string; status: 'running' | 'blocked' | 'idle' | 'archived'; progress: number; createdAt?: ISODateTime; agentCount?:number; attentionCount?:number; attention?:{blockedTasks:number;pendingApprovals:number;failedAgents:number}; }
 export interface Task { id: ID; projectId: ID; parentId?: ID | null; title: string; description: string; assigneeAgentId?: ID | null; assigneeRoleId?: ID | null; status: TaskStatus; progress: number; dependencyIds: ID[]; evidenceStatus: EvidenceStatus; acceptanceCriteria: AcceptanceCriterion[]; updatedAt?: ISODateTime; }
 export interface AcceptanceCriterion { id: ID; description: string; satisfied: boolean; evidenceArtifactIds?: ID[]; }
 export interface RoleTemplate { id: ID; name: string; version: string; purpose: string; capabilities: string[]; allowedPermissions: string[]; preferredModelId?: ID; lifecycle: 'draft' | 'active' | 'parked' | 'archived'; }
 export interface Agent { id: ID; projectId: ID; roleTemplateId: ID; name: string; status: AgentStatus; taskId?: ID | null; sessionId?: ID | null; lastSeenAt?: ISODateTime; }
+export interface AgentSession { id:ID;projectId:ID;agentId:ID;state:string;createdAt:ISODateTime;lastResumedAt?:ISODateTime|null;lastParkedAt?:ISODateTime|null;providerCheckpointId?:string|null; }
 export interface Channel { id: ID; projectId: ID; name: string; purpose: string; contextPolicy: 'relevant' | 'task' | 'project'; }
 export type KnowledgeReadiness = 'KNOWN'|'PARTIAL'|'UNKNOWN';
 export interface Message { id: ID; channelId: ID; senderAgentId?: ID | null; senderName: string; content: string; createdAt: ISODateTime; artifactIds?: ID[]; responseMode?: 'single'|'multi'; responseGroupId?: ID|null; routeReason?: string|null; knowledgeReadiness?: KnowledgeReadiness|null; knowledgeReadinessReason?: string|null; stageCompletion?: { level: 'low' | 'medium' | 'high'; taskId: ID; evidenceArtifactIds: ID[]; verified: boolean; }; }
