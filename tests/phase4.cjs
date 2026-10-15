@@ -1,0 +1,50 @@
+const assert=require('node:assert/strict');
+const path=require('node:path');
+const base=process.argv[2];
+const {LocalArtifactRepository}=require(path.join(base,'data/artifactRepository.js'));
+const {LocalApprovalRepository}=require(path.join(base,'data/approvalRepository.js'));
+const {LocalComputeRepository}=require(path.join(base,'data/computeRepository.js'));
+const org=require(path.join(base,'data/organizationRepository.js')).localOrganizationRepository;
+(async()=>{
+ const approvals=new LocalApprovalRepository(org);const assets=new LocalArtifactRepository(org);const slots=new LocalComputeRepository();
+ const initial=(await assets.listArtifacts('project-1')).items;assert.equal(initial.length,4);
+ assert.equal(initial.every(x=>x.demoMetadata&&!x.contentAvailable),true);
+ assert.equal(await assets.getContent(initial[0].id),null);
+ assert.equal((await assets.listArtifacts('project-2')).items.length,0);
+ const file=new File(['Hello MRLC bytes'],'proof.tex',{type:'text/plain'});
+ const a=await assets.uploadArtifact('project-1',file,'task-1');assert.equal(a.name,'proof.tex');
+ assert.equal(a.demoMetadata,false);assert.equal(a.contentAvailable,true);
+ assert.equal(await (await assets.getContent(a.id)).text(),'Hello MRLC bytes');
+ const latest=await assets.uploadArtifact('project-1',new File(['SECOND VERSION'],'proof.tex',{type:'text/plain'}),'task-1');
+ assert.equal(latest.id,a.id);assert.equal(latest.version,'v2.0');
+ const vers=(await assets.listVersions(a.id)).items;assert.equal(vers.length,3); // includes metadata-only original demo seed
+ assert.equal(await (await assets.getContent(a.id,vers[1].id)).text(),'Hello MRLC bytes');
+ assert.equal(await (await assets.getContent(a.id,vers[0].id)).text(),'SECOND VERSION');
+ assert.equal(await assets.getContent(a.id,vers[2].id),null);
+ assert.equal((await assets.listEvidence(a.id)).items.length,0);
+ await assert.rejects(()=>assets.uploadArtifact('missing',file),/project/i);
+ await assert.rejects(()=>assets.uploadArtifact('project-1',file,'task-on-other-project'),/does not belong/);
+ await assert.rejects(()=>assets.uploadArtifact('project-1',new File([new Uint8Array(25*1024*1024+1)],'big.bin')),/limit/i);
+ const active=(await approvals.listApprovals('project-1')).items;assert.equal(active.length,2);
+ await assert.rejects(()=>approvals.decide(active[0].id,{decision:'approve',expectedRevision:0}),/stale revision/);
+ await assert.rejects(()=>approvals.decide(active[0].id,{decision:'reduce_scope',expectedRevision:1}),/scopeOverride/);
+ const pending=await approvals.decide(active[0].id,{decision:'request_details',reason:'Need proof logs',expectedRevision:1});
+ assert.equal(pending.status,'pending');assert.equal(pending.revision,2);
+ const resolved=await approvals.decide(active[0].id,{decision:'approve',expectedRevision:2});
+ assert.equal(resolved.status,'resolved');assert.equal(resolved.revision,3);
+ const history=(await approvals.listDecisions(active[0].id)).items;assert.deepEqual(history.map(x=>x.decision),['request_details','approve']);
+ await assert.rejects(()=>approvals.decide(active[0].id,{decision:'reject',reason:'no',expectedRevision:3}),/already resolved/);
+ assert.equal((await approvals.listApprovals('project-1')).items.length,2); // resolved retained
+ assert.equal((await approvals.listApprovals('project-1')).items.find(x=>x.id===active[0].id).status,'resolved');
+ const slot=(await slots.listSlots()).items[0];assert.equal(slot.state,'active');
+ await assert.rejects(()=>slots.resumeSlot(slot.id),/transition rejected/);
+ assert.equal((await slots.pauseSlot(slot.id)).state,'paused');
+ await assert.rejects(()=>slots.pauseSlot(slot.id),/transition rejected/);
+ assert.equal((await slots.resumeSlot(slot.id)).state,'active');
+ const released=await slots.releaseSlot(slot.id);assert.equal(released.state,'free');assert.equal(released.agentId,undefined);
+ assert.equal((await slots.listSlots()).items.length,2); // slot record preserved
+ assert.equal((await slots.releaseSlot(slot.id)).state,'free');
+ assert.equal(await slots.getMetrics(),null);assert.equal(await slots.getBudget(),null);
+ assert.equal((await slots.listSessions()).items.length,0);
+ console.log('PASS: 34+ Phase 4 assertions (bytes, versions, isolation, approval audit/revision, slot transitions)');
+})().catch(e=>{console.error(e);process.exitCode=1;});

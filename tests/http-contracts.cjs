@@ -1,0 +1,55 @@
+const assert=require('node:assert/strict');
+const path=require('node:path');
+const output=process.argv[2];
+const {ApiClient}=require(path.join(output,'api/client.js'));
+const {createServices}=require(path.join(output,'api/services.js'));
+const {httpOrganizationRepository}=require(path.join(output,'data/httpOrganizationRepository.js'));
+const calls=[];
+const fakeFetch=async(url,init={})=>{
+  calls.push({url,method:init.method||'GET',body:init.body&&typeof init.body==='string'?JSON.parse(init.body):null,authorization:new Headers(init.headers).get('Authorization')});
+  return new Response(JSON.stringify({items:[],id:'mock-id',name:'Demo',status:'idle'}),{status:200,headers:{'Content-Type':'application/json'}});
+};
+const api=createServices(new ApiClient({baseUrl:'http://local.test/',getAccessToken:()=> 'demo-token',fetcher:fakeFetch}));
+const repo=httpOrganizationRepository(api);
+const run=async()=>{
+  await api.auth.me();
+  await api.auth.tokenStatus();
+  await api.auth.rotateToken('custom_login_token_12345678901234567890');
+  await api.auth.revokeToken();
+  await repo.listProjects();
+  await repo.createProject({name:'Demo',description:'Desc'});
+  await repo.updateProject('project/id',{name:'Updated'});
+  await repo.archiveProject('project/id','finished');
+  await repo.listRoles();
+  await repo.createRole({name:'Reviewer',purpose:'Review',capabilities:['Review'],allowedPermissions:['tasks.review']});
+  await repo.updateRole('role-id',{purpose:'New'});
+  await repo.transitionRole('role-id','park');
+  await repo.listAgents('project/id');
+  await repo.assignAgent({projectId:'project/id',roleTemplateId:'role-id',name:'R'});
+  await repo.parkAgent('agent-id');
+  await repo.resumeAgent('agent-id');
+  assert.deepEqual(calls.map(c=>[c.method,c.url.replace('http://local.test','')]),[
+    ['GET','/api/v1/auth/me'],
+    ['GET','/api/v1/auth/me/token'],
+    ['POST','/api/v1/auth/me/token'],
+    ['DELETE','/api/v1/auth/me/token'],
+    ['GET','/api/v1/projects'],
+    ['POST','/api/v1/projects'],
+    ['PATCH','/api/v1/projects/project%2Fid'],
+    ['POST','/api/v1/projects/project%2Fid/archive'],
+    ['GET','/api/v1/roles'],
+    ['POST','/api/v1/roles'],
+    ['PATCH','/api/v1/roles/role-id'],
+    ['POST','/api/v1/roles/role-id/park'],
+    ['GET','/api/v1/projects/project%2Fid/agents'],
+    ['POST','/api/v1/projects/project%2Fid/agents'],
+    ['POST','/api/v1/agents/agent-id/park'],
+    ['POST','/api/v1/agents/agent-id/resume'],
+  ]);
+  assert.deepEqual(calls[2].body,{token:'custom_login_token_12345678901234567890'});
+  assert.deepEqual(calls[7].body,{reason:'finished'});
+  assert.deepEqual(calls[13].body,{projectId:'project/id',roleTemplateId:'role-id',name:'R'});
+  assert.equal(calls.every(c=>c.authorization==='Bearer demo-token'),true);
+  console.log('PASS: 16 HTTP adapter routes + auth-token management, ID encoding, request bodies and bearer headers');
+};
+run().catch(e=>{console.error(e);process.exitCode=1;});

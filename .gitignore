@@ -1,0 +1,18 @@
+node_modules/
+dist/
+.env.local
+
+backend/var/
+backend/.venv/
+backend/.env
+backend/.pytest_cache/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/*.sqlite*
+
+# local secrets / generated build state
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+.DS_Store

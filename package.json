@@ -1,0 +1,36 @@
+{
+  "name": "mrlc-frontend",
+  "private": true,
+  "version": "0.7.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "check": "tsc --noEmit",
+    "test:domain": "bash ./scripts/test-domain.sh",
+    "test:contracts": "bash ./scripts/test-contracts.sh",
+    "test:repositories": "bash ./scripts/test-domain.sh",
+    "test:phase4": "bash ./scripts/test-phase4.sh && bash ./scripts/test-phase4-http.sh",
+    "test:phase5": "bash ./scripts/test-phase5.sh",
+    "check:shim": "bash ./scripts/check-react-shim.sh",
+    "test:all": "npm run test:domain && npm run test:contracts && npm run test:phase4 && npm run test:phase5 && npm run test:phase6 && npm run check:shim",
+    "test:phase6": "bash ./scripts/test-phase6.sh",
+    "backend:test": "cd backend && python -m pytest -q tests/test_api.py",
+    "backend:dev": "bash ./scripts/run-backend.sh",
+    "mrlc:init": "bash ./scripts/init.sh",
+    "mrlc:start": "bash ./scripts/run.sh dev",
+    "mrlc:prod": "bash ./scripts/run.sh prod"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.0"
+  }
+}

@@ -1,0 +1,10 @@
+const assert=require('node:assert/strict');const path=require('node:path');
+const {serializeLogs}=require(path.join(process.argv[2],'data/logExport.js'));
+const record={id:'log-1',timestamp:'2026-10-14T10:00:00Z',level:'warn',source:'runtime',projectId:'project-1',message:'=HYPERLINK("http://example.invalid")\r\nline 2'};
+const ndjson=serializeLogs([record],'jsonl');
+assert.deepEqual(JSON.parse(ndjson.trim()),record);
+const csv=serializeLogs([record],'csv');
+assert.ok(csv.includes('"\'=HYPERLINK(""http://example.invalid"")\r\nline 2"'));
+assert.equal(serializeLogs([],'csv').split('\r\n')[0],'id,timestamp,level,source,projectId,taskId,traceId,message');
+assert.equal(serializeLogs([],'jsonl'),'');
+console.log('PASS: Phase 5 JSONL and RFC-style quoted CSV export, newline and formula escaping');

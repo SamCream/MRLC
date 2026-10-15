@@ -1,0 +1,102 @@
+import type { CreateRole, UpdateRole, UpdateProject, AgentAssignment, RoleTransition } from '../data/organizationRepository';
+import { ApiClient, idSegment as id, query } from './client';
+import type { Project, Task, NewTask, Agent, RoleTemplate, Channel, Message, Artifact, ArtifactVersion, EvidenceLink, Approval, ApprovalRecord, ApprovalDecisionInput, ComputeSlot, RuntimeQueueItem, RuntimeMetrics, RuntimeBudget, RuntimeSession, AuditLog, Page, SystemHealth, SystemTopology, InfrastructureNode, Accelerator, LogFilter, LogSavedView, LogExportRequest, LogExportJob, ProjectRuntimeSettings, ProjectOverviewSnapshot, AppearanceSettings, AuthAccount, LoginTokenStatus, LoginTokenResult } from '../domain/models';
+
+/** Candidate REST surface; paths must be negotiated with the real backend. */
+export function createServices(http: ApiClient) {
+  return {
+    auth:{
+      me:()=>http.get<AuthAccount>('/api/v1/auth/me'),
+      tokenStatus:()=>http.get<LoginTokenStatus>('/api/v1/auth/me/token'),
+      rotateToken:(token?:string)=>http.post<LoginTokenResult>('/api/v1/auth/me/token',token?{token}:{}),
+      revokeToken:()=>http.delete<void>('/api/v1/auth/me/token'),
+    },
+    capabilities:()=>http.get<Record<string,unknown>>('/api/v1/capabilities'),
+    projects: {
+      list: () => http.get<Page<Project>>('/api/v1/projects'),
+      get: (projectId: string) => http.get<Project>(`/api/v1/projects/${id(projectId)}`),
+      create: (input: Pick<Project, 'name' | 'description'>) => http.post<Project>('/api/v1/projects', input),
+      update: (projectId: string, patch: UpdateProject) => http.patch<Project>(`/api/v1/projects/${id(projectId)}`, patch),
+      archive: (projectId: string, reason?: string) => http.post<Project>(`/api/v1/projects/${id(projectId)}/archive`, { reason }),
+    },
+    tasks: {
+      list: (projectId: string, cursor?: string) => http.get<Page<Task>>(`/api/v1/projects/${id(projectId)}/tasks${query({cursor})}`),
+      get: (taskId: string) => http.get<Task>(`/api/v1/tasks/${id(taskId)}`),
+      create: (input: NewTask) => http.post<Task>(`/api/v1/projects/${id(input.projectId)}/tasks`, input),
+      update: (taskId: string, patch: Partial<Task>) => http.patch<Task>(`/api/v1/tasks/${id(taskId)}`, patch),
+      review: (taskId: string) => http.post<Task>(`/api/v1/tasks/${id(taskId)}/review`),
+      dispatch: (taskId: string) => http.post<{jobId:string;status:string}>(`/api/v1/tasks/${id(taskId)}/dispatch`),
+      verifyCriterion: (taskId:string,criterionId:string,artifactIds:string[])=>http.post<Task>(`/api/v1/tasks/${id(taskId)}/criteria/${id(criterionId)}/verify`,{evidenceArtifactIds:artifactIds}),
+      accept: (taskId:string,reason:string)=>http.post<Task>(`/api/v1/tasks/${id(taskId)}/accept`,{reason}),
+      activity: (taskId: string, cursor?: string) => http.get<Page<AuditLog>>(`/api/v1/tasks/${id(taskId)}/activity${query({cursor})}`),
+    },
+    roles: {
+      list: () => http.get<Page<RoleTemplate>>('/api/v1/roles'),
+      create: (input: CreateRole) => http.post<RoleTemplate>('/api/v1/roles', input),
+      update: (roleId: string, patch: UpdateRole) => http.patch<RoleTemplate>(`/api/v1/roles/${id(roleId)}`, patch),
+      lifecycle: (roleId: string, action: RoleTransition) => http.post<RoleTemplate>(`/api/v1/roles/${id(roleId)}/${action}`),
+    },
+    agents: {
+      list: (projectId: string) => http.get<Page<Agent>>(`/api/v1/projects/${id(projectId)}/agents`),
+      assign: (input: AgentAssignment) => http.post<Agent>(`/api/v1/projects/${id(input.projectId)}/agents`, input),
+      get: (agentId: string) => http.get<Agent>(`/api/v1/agents/${id(agentId)}`),
+      sessions: (agentId: string) => http.get<unknown>(`/api/v1/agents/${id(agentId)}/sessions`),
+      park: (agentId: string) => http.post<Agent>(`/api/v1/agents/${id(agentId)}/park`),
+      resume: (agentId: string) => http.post<Agent>(`/api/v1/agents/${id(agentId)}/resume`),
+    },
+    channels: {
+      list: (projectId: string) => http.get<Page<Channel>>(`/api/v1/projects/${id(projectId)}/channels`),
+      create: (projectId: string, data: Pick<Channel, 'name' | 'purpose' | 'contextPolicy'>) => http.post<Channel>(`/api/v1/projects/${id(projectId)}/channels`, data),
+      update: (channelId: string, patch: Partial<Channel>) => http.patch<Channel>(`/api/v1/channels/${id(channelId)}`, patch),
+      messages: (channelId: string, cursor?: string) => http.get<Page<Message>>(`/api/v1/channels/${id(channelId)}/messages${query({cursor})}`),
+      respond: (channelId:string,agentId:string,artifactIds:string[]=[])=>http.post<{jobId:string;status:string}>(`/api/v1/channels/${id(channelId)}/respond`,{agentId,artifactIds}),
+      send: (channelId: string, content: string, responseMode: 'single' | 'multi', artifactIds?: string[]) => http.post<Message>(`/api/v1/channels/${id(channelId)}/messages`, {content, responseMode, ...(artifactIds?.length?{artifactIds}: {})}),
+      search: (channelId: string, term: string) => http.get<Page<Message>>(`/api/v1/channels/${id(channelId)}/search${query({q:term})}`),
+    },
+    artifacts: {
+      list: (projectId: string) => http.get<Page<Artifact>>(`/api/v1/projects/${id(projectId)}/artifacts`),
+      get: (artifactId: string) => http.get<Artifact>(`/api/v1/artifacts/${id(artifactId)}`),
+      upload: (projectId: string, file: File, taskId?: string) => http.upload<Artifact>(`/api/v1/projects/${id(projectId)}/artifacts`, file, taskId ? {taskId} : {}),
+      versions: (artifactId: string) => http.get<Page<ArtifactVersion>>(`/api/v1/artifacts/${id(artifactId)}/versions`),
+      evidence: (artifactId: string) => http.get<Page<EvidenceLink>>(`/api/v1/artifacts/${id(artifactId)}/evidence`),
+      content: (artifactId: string, versionId?: string) => http.getBlob(`/api/v1/artifacts/${id(artifactId)}/content${query({versionId})}`),
+    },
+    approvals: {
+      list: (projectId?: string) => http.get<Page<Approval>>(`/api/v1/approvals${query({projectId})}`),
+      get: (approvalId: string) => http.get<Approval>(`/api/v1/approvals/${id(approvalId)}`),
+      history: (approvalId: string) => http.get<Page<ApprovalRecord>>(`/api/v1/approvals/${id(approvalId)}/decisions`),
+      decide: (approvalId: string, input: ApprovalDecisionInput) => http.post<Approval>(`/api/v1/approvals/${id(approvalId)}/decisions`, input),
+    },
+    compute: {
+      slots: () => http.get<Page<ComputeSlot>>('/api/v1/runtime/slots'),
+      pause: (slotId: string) => http.post<ComputeSlot>(`/api/v1/runtime/slots/${id(slotId)}/pause`),
+      resume: (slotId: string) => http.post<ComputeSlot>(`/api/v1/runtime/slots/${id(slotId)}/resume`),
+      release: (slotId: string) => http.post<ComputeSlot>(`/api/v1/runtime/slots/${id(slotId)}/release`),
+      queue: () => http.get<Page<RuntimeQueueItem>>('/api/v1/runtime/queue'),
+      sessions: () => http.get<Page<RuntimeSession>>('/api/v1/runtime/sessions'),
+      metrics: () => http.get<RuntimeMetrics | null>('/api/v1/runtime/metrics'),
+      budget: () => http.get<RuntimeBudget | null>('/api/v1/runtime/budget'),
+    },
+    system: {
+      health: () => http.get<SystemHealth | null>('/api/v1/system/health'),
+      checkHealth: () => http.post<SystemHealth | null>('/api/v1/system/health-checks'),
+      topology: () => http.get<SystemTopology | null>('/api/v1/system/topology'),
+      nodes: (scope?: 'local'|'remote') => http.get<Page<InfrastructureNode>>(`/api/v1/system/nodes${query({scope})}`),
+      accelerators: () => http.get<Page<Accelerator>>('/api/v1/system/accelerators'),
+      logs: (filter: LogFilter = {}) => http.get<Page<AuditLog>>(`/api/v1/system/logs${query(filter as Record<string,string|number|undefined>)}`),
+      logViews: () => http.get<Page<LogSavedView>>('/api/v1/users/me/log-views'),
+      createLogView: (view: Pick<LogSavedView,'name'|'filter'>) => http.post<LogSavedView>('/api/v1/users/me/log-views', view),
+      updateLogView: (viewId: string, view: Partial<Pick<LogSavedView,'name'|'filter'>>) => http.patch<LogSavedView>(`/api/v1/users/me/log-views/${id(viewId)}`, view),
+      deleteLogView: (viewId: string) => http.delete<void>(`/api/v1/users/me/log-views/${id(viewId)}`),
+      exportLogs: (req: LogExportRequest) => http.post<LogExportJob>('/api/v1/system/logs/export',req),
+      runtimeSettings: (projectId: string) => http.get<ProjectRuntimeSettings>(`/api/v1/projects/${id(projectId)}/settings`),
+      updateRuntimeSettings: (projectId: string, data: Omit<ProjectRuntimeSettings,'revision'>, expectedRevision: number) => http.patch<ProjectRuntimeSettings>(`/api/v1/projects/${id(projectId)}/settings`, {...data,expectedRevision}),
+      resetRuntimeSettings: (projectId: string, expectedRevision: number) => http.post<ProjectRuntimeSettings>(`/api/v1/projects/${id(projectId)}/settings/reset`,{expectedRevision}),
+      appearance:()=>http.get<AppearanceSettings>('/api/v1/users/me/appearance'),
+      saveAppearance:(data:AppearanceSettings)=>http.patch<AppearanceSettings>('/api/v1/users/me/appearance',data),
+      resetAppearance:()=>http.post<AppearanceSettings>('/api/v1/users/me/appearance/reset'),
+      overview: (projectId:string) => http.get<ProjectOverviewSnapshot>(`/api/v1/projects/${id(projectId)}/overview`),
+    },
+  };
+}
+export type Services = ReturnType<typeof createServices>;
