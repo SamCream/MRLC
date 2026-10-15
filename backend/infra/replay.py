@@ -74,7 +74,9 @@ def _project_events(events: list[Event]) -> ReplayState:
         elif event.event_type == "ARTIFACT_RECORDED":
             artifacts[str(payload["artifact_id"])] = str(payload["content_hash"])
         elif event.event_type == "MEMORY_RECORDED":
-            memories[str(payload["memory_id"])] = str(payload.get("status", "ACTIVE"))
+            memories[str(payload["memory_id"])] = str(payload.get("status", "ACTIVE")).upper()
+        elif event.event_type == "MEMORY_SUPERSEDED":
+            memories[str(payload["memory_id"])] = "SUPERSEDED"
     return ReplayState(
         projects=projects,
         sessions=sessions,
