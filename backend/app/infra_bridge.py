@@ -1299,7 +1299,7 @@ class InfraBridge:
             raise ValueError("replay sequence must be non-negative")
         left=self.replay(project_id,from_sequence)
         right=self.replay(project_id,to_sequence)
-        fields=("projects","sessions","tasks","delegations","leases","issues","decisions","artifacts","memories")
+        fields=("projects","sessions","tasks","delegations","leases","issues","decisions","artifacts","memories","beliefs")
         changes={}
         for field in fields:
             before=getattr(left,field)
