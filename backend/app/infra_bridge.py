@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +31,10 @@ from infra.model_gateway import ModelGateway, ModelResult
 from infra.replay import replay_project
 from infra.context.bundle import ContextAssembler, ContextCandidate
 from infra.retrieval.pipeline import RetrievalPipeline, RetrievalDocument
+from infra.frontier import (
+    FrontierAdvisorUnavailable, FrontierMode, FrontierPolicy, FrontierRequest, FrontierService,
+)
+from runtime.frontier_advisor import FrontierAdvisor
 
 
 _TASK_STATE = {
@@ -66,6 +71,17 @@ class InfraBridge:
         self.model_gateway = ModelGateway({}, database_path=database_path)
         self.context_assembler = ContextAssembler()
         self.retrieval = RetrievalPipeline()
+        frontier_budget=max(1,int(os.getenv("MRLC_FRONTIER_BUDGET","1000") or 1000))
+        self.frontier_advisor=(
+            FrontierAdvisor(gateway=self.model_gateway) if os.getenv("CCR_API_KEY") else None
+        )
+        # CONSULT is productized through FastAPI below. DELEGATE remains disabled here
+        # until the migrated runner shares this process's WorkerRunStore authority.
+        self.frontier=FrontierService(
+            FrontierPolicy(allow_delegation=False,budget=frontier_budget,max_depth=1),
+            database_path=database_path,
+            advisor=self.frontier_advisor,
+        )
         store.infra_bridge = self
         self.reconcile_projection()
 
@@ -566,6 +582,173 @@ class InfraBridge:
             actor_id=decision.authority,
             idempotency_key=f"decision:{decision.decision_id}:recorded",
         )
+
+    def frontier_snapshot(self, project_id: str) -> dict[str, Any]:
+        requests=[
+            {
+                "requestId":row["request_id"],"mode":row["mode"],
+                "ownerSessionId":row["owner_session_id"],
+                "taskOwnerSessionId":row["task_owner_session_id"],
+                "childSessionId":row["child_session_id"],
+                "advice":row["advice"],"returnContract":row["return_contract"],
+                "reviewState":row["review_state"],"budgetUsed":int(row["budget_used"]),
+            }
+            for row in self.store.conn.execute(
+                "SELECT * FROM frontier_requests WHERE project_id=? ORDER BY rowid DESC LIMIT 100",
+                (project_id,),
+            ).fetchall()
+        ]
+        sessions=[
+            {"sessionId":row["session_id"],"roleId":row["role_id"],"lifecycle":row["lifecycle"]}
+            for row in self.store.conn.execute(
+                "SELECT session_id,role_id,lifecycle FROM sessions "
+                "WHERE project_id=? ORDER BY rowid",(project_id,)
+            ).fetchall()
+        ]
+        tasks=[
+            {"taskId":row["task_id"],"state":row["state"]}
+            for row in self.store.conn.execute(
+                "SELECT task_id,state FROM tasks WHERE project_id=? ORDER BY rowid",(project_id,)
+            ).fetchall()
+        ]
+        return {
+            "capabilities":{
+                "consult":{
+                    "available":self.frontier_advisor is not None,
+                    "budgetLimit":self.frontier.policy.budget,
+                    "reason":None if self.frontier_advisor is not None
+                             else "CCR_API_KEY is not configured; no Frontier call will be made.",
+                },
+                "delegate":{
+                    "available":False,
+                    "reason":"FastAPI DELEGATE remains disabled until the migrated runner shares the authoritative WorkerRunStore and lifecycle.",
+                },
+            },
+            "sessions":sessions,"tasks":tasks,"requests":requests,
+        }
+
+    def frontier_consult(
+        self, *, project_id: str, parent_task_id: str, owner_session_id: str,
+        capability: str, budget: int, actor_id: str, operation_id: str,
+    ) -> dict[str, Any]:
+        if self.frontier_advisor is None:
+            raise FrontierAdvisorUnavailable(
+                "frontier CONSULT unavailable: configure CCR_API_KEY and MRLC_CCR_BASE_URL"
+            )
+        if not capability.strip():
+            raise ValueError("capability must not be empty")
+        if not operation_id.strip() or len(operation_id)>128:
+            raise ValueError("operationId must contain 1-128 characters")
+        if type(budget) is not int or budget<1 or budget>self.frontier.policy.budget:
+            raise ValueError(
+                f"budget must be an integer between 1 and {self.frontier.policy.budget}"
+            )
+        task=self.store.conn.execute(
+            "SELECT project_id FROM tasks WHERE task_id=?",(parent_task_id,)
+        ).fetchone()
+        if task is None or task["project_id"]!=project_id:
+            raise ValueError("parent task must belong to this project")
+        session=self.store.conn.execute(
+            "SELECT project_id,lifecycle FROM sessions WHERE session_id=?",(owner_session_id,)
+        ).fetchone()
+        if session is None or session["project_id"]!=project_id:
+            raise ValueError("owner session must belong to this project")
+        if session["lifecycle"]!="ACTIVE":
+            raise ValueError("owner session must be ACTIVE")
+
+        existing=self.store.conn.execute(
+            "SELECT status,request_id,error FROM frontier_consult_operations "
+            "WHERE actor_id=? AND operation_id=?",(actor_id,operation_id)
+        ).fetchone()
+        if existing is not None:
+            if existing["status"]=="COMPLETED" and existing["request_id"]:
+                row=self.store.conn.execute(
+                    "SELECT * FROM frontier_requests WHERE request_id=?",(existing["request_id"],)
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("completed Frontier receipt references missing request")
+                return {
+                    "requestId":row["request_id"],"projectId":project_id,"mode":row["mode"],
+                    "ownerSessionId":row["owner_session_id"],"advice":row["advice"],
+                    "reviewState":row["review_state"],"budgetUsed":int(row["budget_used"]),
+                    "operationId":operation_id,"replayed":True,
+                }
+            raise RuntimeError(
+                "operationId already used for a non-completed Frontier consultation: "
+                +(existing["error"] or existing["status"])
+            )
+
+        created=datetime.now(timezone.utc).isoformat()
+        with self.store.tx():
+            self.store.conn.execute(
+                "INSERT INTO frontier_consult_operations("
+                "actor_id,operation_id,project_id,status,created_at) VALUES(?,?,?,?,?)",
+                (actor_id,operation_id,project_id,"RUNNING",created)
+            )
+            self._append(
+                project_id,"FRONTIER_CONSULT_REQUESTED",
+                {"operation_id":operation_id,"parent_task_id":parent_task_id,
+                 "owner_session_id":owner_session_id,"capability":capability,"budget":budget},
+                actor_id=actor_id,idempotency_key=f"frontier-consult:{actor_id}:{operation_id}:requested",
+                task_id=parent_task_id,
+            )
+            self.store.emit("infra.frontier.consult.requested",project_id,{"operationId":operation_id})
+
+        request=FrontierRequest(
+            project_id,parent_task_id,owner_session_id,capability.strip(),
+            FrontierMode.CONSULT,budget,
+        )
+        try:
+            # Network execution is intentionally outside the SQLite write transaction.
+            advice=self.frontier_advisor.consult(request)
+        except Exception as exc:
+            completed=datetime.now(timezone.utc).isoformat()
+            with self.store.tx():
+                self.store.conn.execute(
+                    "UPDATE frontier_consult_operations SET status='FAILED',error=?,completed_at=? "
+                    "WHERE actor_id=? AND operation_id=?",
+                    (type(exc).__name__+": "+str(exc)[:500],completed,actor_id,operation_id)
+                )
+                self._append(
+                    project_id,"FRONTIER_CONSULT_FAILED",
+                    {"operation_id":operation_id,"error":type(exc).__name__},
+                    actor_id=actor_id,
+                    idempotency_key=f"frontier-consult:{actor_id}:{operation_id}:failed",
+                    task_id=parent_task_id,
+                )
+                self.store.emit("infra.frontier.consult.failed",project_id,{"operationId":operation_id})
+            raise
+
+        with self.store.tx():
+            # Persist FrontierResult without a second provider call.
+            result=self.frontier.execute(
+                request,connection=self.store.conn,advisor=lambda _:advice
+            )
+            completed=datetime.now(timezone.utc).isoformat()
+            self.store.conn.execute(
+                "UPDATE frontier_consult_operations SET status='COMPLETED',request_id=?,completed_at=? "
+                "WHERE actor_id=? AND operation_id=?",
+                (result.request_id,completed,actor_id,operation_id)
+            )
+            self._append(
+                project_id,"FRONTIER_CONSULT_RETURNED",
+                {"operation_id":operation_id,"request_id":result.request_id,
+                 "parent_task_id":parent_task_id,"owner_session_id":owner_session_id,
+                 "capability":capability,"budget_used":result.budget_used},
+                actor_id=actor_id,
+                idempotency_key=f"frontier-consult:{actor_id}:{operation_id}:returned",
+                task_id=parent_task_id,
+            )
+            self.store.emit(
+                "infra.frontier.consult.completed",project_id,
+                {"operationId":operation_id,"requestId":result.request_id},
+            )
+        return {
+            "requestId":result.request_id,"projectId":result.project_id,
+            "mode":result.mode.value,"ownerSessionId":result.owner_session_id,
+            "advice":result.advice,"reviewState":result.review_state,
+            "budgetUsed":result.budget_used,"operationId":operation_id,"replayed":False,
+        }
 
     def scheduler_snapshot(self, project_id: str) -> dict[str, Any]:
         """Project-scoped scheduler/lease view for the Infra Console.
