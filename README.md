@@ -7,7 +7,7 @@ A full-stack MRLC control room. The React frontend renders the existing product 
 - **Frontend:** the existing Control Room remains intact, with a separate Infra Core navigation domain for Events/Replay, Scheduler/Leases, Memory/Context, Provenance, Invocations and Consistency/Recovery.
 - **Application backend:** multi-user RBAC, password/dedicated-token sessions, project/task/workspace/artifact/approval APIs, disk-backed SHA-256 artifacts, logs and SSE.
 - **Infra core:** authoritative EventStore + point-in-time replay/diff, Project/Task/Session registries, consistency outbox/inbox/Saga, persistent Scheduler with lease/fencing, History, evidence-backed Memory/Retrieval that is consumed by real provider calls, Project Bank, Continuity, MCP/Skills and managed backup/restore-drill recovery.
-- **Runtime/Gateway:** the FastAPI job worker dispatches through the migrated Scheduler, assembles project/role-scoped durable Memory with a persisted inclusion/exclusion trace, and uses the migrated OpenAI-compatible provider adapter; invocation IDs/provider request IDs/usage are written to the Model Gateway ledger. Frontier CONSULT is capability-gated behind an authorized CCR endpoint.
+- **Runtime/Gateway:** the FastAPI job worker dispatches through the migrated Scheduler, assembles project/role-scoped durable Memory with a persisted inclusion/exclusion trace, and uses the migrated OpenAI-compatible provider adapter; invocation IDs/provider request IDs/usage are written to the Model Gateway ledger. Frontier CONSULT is capability-gated behind an authorized CCR endpoint. Frontier DELEGATE is disabled by default but can launch configured Codex/DSH children through a hard budget meter, isolated Git worktree, independent acceptance verification and mandatory owner review.
 - **Unknown metrics remain unknown:** no fictitious physical GPU allocations, provider checkpoints or telemetry are invented.
 
 ## Local startup
@@ -85,7 +85,7 @@ backend/
   plugins/dev/profile/       migrated Dev runtime profile
   tests/                     FastAPI + migration + legacy-core regressions
   INFRA_MIGRATION.md         migration authority/boundary record
-  openapi.json               exported FastAPI HTTP route schema
+  scripts/export_openapi.py  deterministic FastAPI OpenAPI exporter (CI artifact)
 src/
   app/                       App, AuthGate and global shell
   pages/                     12 React/TSX pages
@@ -115,7 +115,7 @@ Backend integration tests, frontend regression suites, TypeScript typecheck and 
 
 ## Important scope limits
 
-This is still **not production ready**. Mature legacy Infra/Runtime/Gateway code has been migrated, but the old Console server is intentionally not restored and Dev/A2CM and direct Codex/DSH worker controls are not yet activated through the current React UI. Frontier CONSULT is exposed through Infra Provenance when CCR is configured; Frontier DELEGATE remains disabled until the worker-run authority is unified. Provider-specific KV checkpoint/restore, physical GPU control, distributed leader election, a complete versioned migration framework, SSO/federation and production key management remain open. See `BACKEND_STATUS.md` and `backend/INFRA_MIGRATION.md`.
+This is still **not production ready**. Mature legacy Infra/Runtime/Gateway code has been migrated, but the old Console server is intentionally not restored. A2CM evidence-backed candidate intake/Primary review is exposed under Infra Memory & Context. Frontier CONSULT is exposed through Infra Provenance when CCR is configured; Frontier DELEGATE is available only when explicitly enabled and a configured Codex/DSH binary exists. Raw independent Codex/DSH process-launch controls are intentionally not exposed: those adapters execute through the governed DELEGATE workflow so budget, worktree isolation, evidence, cancellation and owner review remain authoritative. Provider-specific KV checkpoint/restore, physical GPU control, distributed leader election, a complete versioned migration framework, SSO/federation and production key management remain open. See `BACKEND_STATUS.md` and `backend/INFRA_MIGRATION.md`.
 
 ## Phase 8 backend authority
 
