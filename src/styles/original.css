@@ -222,3 +222,26 @@
   .infra-master-detail.compact-detail{grid-template-columns:1fr}
   .infra-master-detail.compact-detail>.infra-list{border-right:0;border-bottom:1px solid var(--line-soft)}
 }
+
+
+/* Frontier DELEGATE: explicit high-risk execution controls */
+.infra-delegate-form{display:grid;gap:10px}
+.infra-delegate-grid{display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,1fr) 110px;gap:9px}
+.infra-delegate-form label,.infra-rationale{display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:10px}
+.infra-delegate-form input,.infra-delegate-form select,.infra-delegate-form textarea,.infra-rationale textarea{
+  width:100%;background:#101619;border:1px solid var(--line);color:#dce3e5;border-radius:8px;padding:8px 9px
+}
+.infra-delegate-form textarea,.infra-rationale textarea{min-height:78px;resize:vertical;line-height:1.45}
+.infra-danger-confirm{flex-direction:row!important;align-items:flex-start!important;border:1px solid rgba(243,178,86,.28);background:rgba(243,178,86,.06);padding:9px;border-radius:8px}
+.infra-danger-confirm input{width:auto!important;margin-top:2px}
+.infra-delegate-runs{border-top:1px solid var(--line-soft);margin-top:2px}
+.infra-delegate-runs>.card-head{border-bottom:1px solid var(--line-soft)}
+.infra-master-detail.compact-detail{grid-template-columns:minmax(300px,.8fr) minmax(360px,1.2fr);gap:0}
+.infra-delegate-detail{padding:11px;border-left:1px solid var(--line-soft);min-width:0}
+.infra-delegate-detail .infra-actions{margin-top:10px;justify-content:flex-end}
+.infra-rationale{margin-top:10px}
+@media(max-width:980px){
+  .infra-delegate-grid{grid-template-columns:1fr}
+  .infra-master-detail.compact-detail{grid-template-columns:1fr}
+  .infra-delegate-detail{border-left:0;border-top:1px solid var(--line-soft)}
+}
