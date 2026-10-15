@@ -99,6 +99,10 @@ class InfraBridge:
                 self._sync_dependencies(item)
             for agent in self.store.all("agent"):
                 self._sync_agent("migration", agent)
+            for row in self.store.conn.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at").fetchall():
+                agent=self.store.obj("agent",row["agent_id"]) if row["agent_id"] else None
+                if agent:
+                    self.enqueue_job(agent,row["project_id"],int(row["priority"]))
 
     def sync_change(self, source: str, kind: str, body: dict, project_id=None, task_id=None) -> None:
         if kind == "project":
@@ -142,6 +146,16 @@ class InfraBridge:
             ))
             self._append(pid,"TASK_CREATED",{"task_id":tid,"title":item.get("title") or tid},
                          actor_id=source,idempotency_key=f"compat:task:{tid}:created",task_id=tid)
+            if desired != "CREATED":
+                evidence=[aid for criterion in item.get("acceptanceCriteria",[])
+                          for aid in criterion.get("evidenceArtifactIds",[]) if aid]
+                if desired=="COMPLETED" and not evidence:
+                    evidence=[f"mrlc://projection/task/{tid}/accepted"]
+                self._append(pid,"TASK_STATE_CHANGED",
+                             {"task_id":tid,"from":"CREATED","to":desired,"evidence_refs":evidence},
+                             actor_id=source,
+                             idempotency_key=self._key(f"compat:task:{tid}:initial-state",{"to":desired,"evidence":evidence}),
+                             task_id=tid)
         else:
             previous=row["state"]
             block_reason=(str(item.get("failureReason") or item.get("blockReason") or "")[:2000] or None) if desired=="BLOCKED" else None
@@ -209,6 +223,25 @@ class InfraBridge:
         if projected is None:
             raise KeyError(f"project projection missing: {project_id}")
         self._sync_project("migration",projected)
+
+    def reconcile_runtime_after_restart(self) -> None:
+        """Clear stale active leases and reconstitute queued scheduler state after restart."""
+        scheduler=Scheduler.from_connection(self.store.conn)
+        for agent in self.store.all("agent"):
+            sid=agent.get("sessionId")
+            if not sid:
+                continue
+            try:
+                meta=scheduler.get(sid)
+            except KeyError:
+                continue
+            if meta.slot_state in {"ACTIVE","DRAINING"}:
+                scheduler.finish(sid,task_state="FAILED")
+        scheduler.save_in_connection(self.store.conn)
+        for row in self.store.conn.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at").fetchall():
+            agent=self.store.obj("agent",row["agent_id"]) if row["agent_id"] else None
+            if agent:
+                self.enqueue_job(agent,row["project_id"],int(row["priority"]))
 
     def enqueue_job(self, agent: dict, project_id: str, priority: int) -> None:
         """Persist scheduler ownership in the same transaction as the compatibility job."""
