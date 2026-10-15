@@ -152,9 +152,9 @@ export interface InfraConsistency {
   sagas:Array<{sagaId:string;sagaType:string;state:string;payload:Record<string,unknown>}>;
 }
 export interface InfraBackupRun {
-  id:string;kind:'BACKUP'|'VERIFY'|string;status:string;backup_id:string|null;
-  destination:string|null;manifest_path:string|null;file_count:number|null;
-  checksum_status:string|null;error:string|null;created_at:string;completed_at:string|null;
+  id:string;kind:'BACKUP'|'VERIFY'|string;status:string;backup_id:string|null;storage_ref:string|null;
+  file_count:number|null;checksum_status:string|null;error:string|null;
+  created_at:string;completed_at:string|null;
 }
 export interface InfraBackupActionResult {
   id:string;backupId:string;status:string;fileCount:number;checksumStatus:string;
