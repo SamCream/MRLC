@@ -43,7 +43,7 @@ The old Phase 8 `events` table conflicted with the authoritative legacy EventSto
 - Project Bank: resolved FastAPI approvals are promoted to decisions; backend-only Issue/Decision/Lesson/Progress endpoints are available.
 - Memory: evidence-backed, temporal, role-scoped storage/retrieval plus create/supersede endpoints. Task/chat provider execution now assembles this Memory under an explicit token budget and persists exact inclusion/exclusion traces.
 - Continuity, MCP, Skills, Context projection/retrieval, WorkerRunStore and audit/risk modules are migrated into `backend/infra`. Backup primitives are connected through a managed backup registry and isolated checksum-verified restore drills.
-- Runtime modules (conversation, routing, rollover, frontier advisor/delegate) and Codex/DSH/Git adapters are present under `backend/runtime` and `backend/adapters`. Frontier CONSULT is exposed through current FastAPI when CCR is configured; DELEGATE remains disabled until WorkerRun authority is unified.
+- Runtime modules (conversation, routing, rollover, frontier advisor/delegate) and Codex/DSH/Git adapters are present under `backend/runtime` and `backend/adapters`. Frontier CONSULT is exposed through current FastAPI when CCR is configured. DELEGATE now shares the authoritative WorkerRunStore and is available only when explicitly enabled and the selected Codex/DSH binary resolves; children run in isolated worktrees behind the hard budget meter and require Parent Review to merge.
 - Dev conversation baseline profile is migrated to `backend/plugins/dev/profile/conversation.json`.
 - The stale repository-local DSH Harness fallback was removed: DSH delegation requires an explicit `MRLC_DELEGATE_DSH_BIN`.
 
@@ -81,8 +81,15 @@ These routes support the separate Infra Core console without changing existing p
 - `GET /api/v1/projects/{projectId}/infra/scheduler`
 - `GET /api/v1/projects/{projectId}/infra/context`
 - `GET /api/v1/projects/{projectId}/infra/bank`
+- `GET /api/v1/projects/{projectId}/infra/a2cm`
+- `POST /api/v1/projects/{projectId}/infra/a2cm/primary-session`
+- `POST /api/v1/projects/{projectId}/infra/a2cm/observations`
+- `POST /api/v1/projects/{projectId}/infra/a2cm/candidates/{candidateId}/review`
 - `GET /api/v1/projects/{projectId}/infra/frontier`
 - `POST /api/v1/projects/{projectId}/infra/frontier/consult`
+- `POST /api/v1/projects/{projectId}/infra/frontier/delegate`
+- `POST /api/v1/projects/{projectId}/infra/frontier/delegations/{requestId}/cancel`
+- `POST /api/v1/projects/{projectId}/infra/frontier/delegations/{requestId}/review`
 - `GET /api/v1/projects/{projectId}/infra/provenance`
 - `GET /api/v1/projects/{projectId}/infra/invocations`
 - `GET /api/v1/projects/{projectId}/infra/consistency`
@@ -108,9 +115,7 @@ The following mature legacy backend modules remain intentionally **not** wired i
 
 - legacy Console command API and Console web server;
 - Dev group-chat ConversationService as a replacement for the current channel UI;
-- Frontier DELEGATE UI controls (Frontier CONSULT is connected);
-- direct Codex/DSH worker launch controls;
-- A2CM product-specific views/workflows.
+- raw direct Codex/DSH process-launch controls are intentionally not exposed as a separate authority; Codex/DSH execute through governed Frontier DELEGATE.
 
 The code is kept as backend capability, but the new FastAPI remains the only product HTTP entry point. Future work should expose typed FastAPI routes after their UI/API contracts are chosen rather than reintroducing the old Console server.
 
@@ -133,4 +138,4 @@ The migration is not considered complete unless this workflow is green.
 - Durable Memory is now part of actual provider input, with project/role isolation, deterministic retrieval, budget enforcement and a persisted assembly manifest.
 - Replay can target an event sequence and compare two reconstructed states.
 - Recovery operations use server-owned paths only. Browser APIs never expose absolute backup/manifest paths, and verification restores into disposable staging rather than overwriting the live database.
-- Frontier CONSULT is capability-gated by CCR configuration and uses an operation-id registry to prevent accidental duplicate paid calls. Frontier DELEGATE is explicitly unavailable on the FastAPI surface until its worker lifecycle shares the authoritative WorkerRunStore.
+- Frontier CONSULT is capability-gated by CCR configuration and uses an operation-id registry to prevent accidental duplicate paid calls. Frontier DELEGATE now shares the authoritative WorkerRunStore, is disabled by default, validates its worker binary at startup, requires explicit `RUN_DELEGATE`, and keeps child changes isolated until Parent Review.\n- A2CM candidate intake is evidence-backed by project-local Domain EventStore IDs; Primary review records policy version, counterevidence and uncertainty, and belief state participates in deterministic replay.
