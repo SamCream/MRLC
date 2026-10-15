@@ -63,8 +63,12 @@ class FrontierDelegateRunner:
     def _default_adapter(self, store):
         timeout = int(os.environ.get("MRLC_DELEGATE_TIMEOUT_SECONDS", "900"))
         if self.worker_kind == "dsh":
-            binary = os.environ.get("MRLC_DELEGATE_DSH_BIN") or str(
-                Path(__file__).resolve().parents[1] / "Harness/deepseek-harness/apps/cli/lib/bin.js")
+            binary = (os.environ.get("MRLC_DELEGATE_DSH_BIN") or "").strip()
+            if not binary:
+                raise RuntimeError(
+                    "MRLC_DELEGATE_DSH_BIN is required when MRLC_DELEGATE_WORKER=dsh; "
+                    "the legacy repository-local Harness path is intentionally not assumed"
+                )
             return DshAdapter(binary, ccr_base_url=ccr_base_url(), ccr_token=os.environ.get("CCR_API_KEY"),
                               state_store=store, timeout_seconds=timeout)
         return CodexAdapter(os.environ.get("MRLC_DELEGATE_CODEX_BIN", "codex"), state_store=store,
