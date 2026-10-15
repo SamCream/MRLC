@@ -230,3 +230,67 @@ def test_workspace_artifact_and_approval_promote_into_infra_truth(tmp_path):
         assert "MESSAGE_RECORDED" in domain
         assert "ARTIFACT_RECORDED" in domain
         assert "DECISION_RECORDED" in domain
+
+
+def test_memory_and_bank_write_apis_are_evented_and_project_scoped(tmp_path):
+    app=create_app(db_path=str(tmp_path/"knowledge.sqlite3"),artifact_dir=str(tmp_path/"files"),
+                   password=PASSWORD,secret="s"*40,admin_token="a"*32)
+    with TestClient(app) as client:
+        _login(client)
+        pid=_project(client,"Knowledge")
+        events=client.get(f"/api/v1/projects/{pid}/infra/events").json()["items"]
+        source_event=next(item["eventId"] for item in events if item["type"]=="PROJECT_CREATED")
+
+        first=client.post(f"/api/v1/projects/{pid}/infra/memory",json={
+            "roleScope":"shared","kind":"fact","content":"Infra owns durable state",
+            "sourceEventRefs":[source_event],"confidence":0.9,
+            "evidence":[{"eventId":source_event,"stance":"supports",
+                         "sourceRef":"event:"+source_event,"confidence":1.0}]
+        })
+        assert first.status_code==201,first.text
+        second=client.post(f"/api/v1/projects/{pid}/infra/memory",json={
+            "roleScope":"shared","kind":"fact","content":"Infra owns durable state and replay",
+            "sourceEventRefs":[source_event],"confidence":0.95,
+            "evidence":[{"eventId":source_event,"stance":"supports",
+                         "sourceRef":"event:"+source_event,"confidence":1.0}]
+        })
+        assert second.status_code==201,second.text
+        superseded=client.post(
+            f"/api/v1/projects/{pid}/infra/memory/{first.json()['memory_id']}/supersede",
+            json={"replacementMemoryId":second.json()["memory_id"]},
+        )
+        assert superseded.status_code==200,superseded.text
+        assert app.state.infra.memory.get(pid,first.json()["memory_id"]).status=="superseded"
+
+        issue=client.post(f"/api/v1/projects/{pid}/infra/bank/issues",json={
+            "title":"Choose migration cutover","blocking":"soft",
+            "decisionOwner":"owner","autoDecidable":False,"reversible":True
+        })
+        assert issue.status_code==201,issue.text
+        decision=client.post(f"/api/v1/projects/{pid}/infra/bank/decisions",json={
+            "title":"Keep FastAPI compatibility layer","authority":"owner",
+            "risk":"low","rationale":"UI contract remains stable"
+        })
+        assert decision.status_code==201,decision.text
+        resolved=client.post(
+            f"/api/v1/projects/{pid}/infra/bank/issues/{issue.json()['issue_id']}/resolve",
+            json={"decisionId":decision.json()["decision_id"]},
+        )
+        assert resolved.status_code==200,resolved.text
+        assert resolved.json()["status"]=="RESOLVED"
+        lesson=client.post(f"/api/v1/projects/{pid}/infra/bank/lessons",json={
+            "title":"Do not fork the source of truth","sourceRefs":[decision.json()["decision_id"]]
+        })
+        assert lesson.status_code==201,lesson.text
+        progress=client.post(f"/api/v1/projects/{pid}/infra/bank/progress",json={
+            "milestone":"Backend core migrated","status":"green","artifactRefs":[]
+        })
+        assert progress.status_code==201,progress.text
+
+        replay=client.get(f"/api/v1/projects/{pid}/infra/replay")
+        assert replay.status_code==200,replay.text
+        state=replay.json()
+        assert state["memories"][first.json()["memory_id"]]=="SUPERSEDED"
+        assert state["memories"][second.json()["memory_id"]]=="ACTIVE"
+        assert state["issues"][issue.json()["issue_id"]]=="RESOLVED"
+        assert decision.json()["decision_id"] in state["decisions"]
