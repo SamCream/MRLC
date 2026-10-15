@@ -8,6 +8,7 @@ os.environ.setdefault("MRLC_SESSION_SECRET","test-signing-key-longer-than-thirty
 
 from fastapi.testclient import TestClient
 from app.main import create_app
+from infra.frontier import FrontierPolicy
 
 PASSWORD="test-password-very-long"
 
@@ -280,3 +281,94 @@ def test_frontier_consult_is_capability_gated_evented_and_idempotent(tmp_path):
         ).json()["items"]]
         assert "FRONTIER_CONSULT_REQUESTED" in domain
         assert "FRONTIER_CONSULT_RETURNED" in domain
+
+
+class FakeDelegateRunner:
+    worker_kind="codex"
+    model_binding="router-managed"
+
+
+def test_frontier_delegate_queue_is_idempotent_replayable_and_cancellable(tmp_path):
+    app,client=_client(tmp_path)
+    core=app.state.infra
+    core.frontier.policy=FrontierPolicy(allow_delegation=True,budget=1000,max_depth=1)
+    core.attach_delegate_runner(FakeDelegateRunner())
+    with client:
+        project_id=_login_and_project(client)
+        role=client.post("/api/v1/roles",json={
+            "name":"Engineer","purpose":"own delegated task","lifecycle":"active",
+            "capabilities":[],"allowedPermissions":["tasks.execute","messages.reply"],
+        })
+        assert role.status_code==201,role.text
+        role_id=role.json()["id"]
+        agent=client.post(f"/api/v1/projects/{project_id}/agents",json={
+            "roleTemplateId":role_id,"name":"Engineer"
+        })
+        assert agent.status_code==201,agent.text
+        agent_row=next(item for item in app.state.store.all("agent",project_id)
+                       if item["id"]==agent.json()["id"])
+        session_id=agent_row["sessionId"]
+        task=client.post(f"/api/v1/projects/{project_id}/tasks",json={
+            "projectId":project_id,"title":"Delegation parent","description":"parent",
+            "assigneeRoleId":role_id,"dependencyIds":[],"acceptanceCriteria":[],
+        })
+        assert task.status_code==201,task.text
+        task_id=task.json()["id"]
+
+        snapshot=client.get(f"/api/v1/projects/{project_id}/infra/frontier")
+        assert snapshot.status_code==200,snapshot.text
+        assert snapshot.json()["capabilities"]["delegate"]["available"] is True
+        assert snapshot.json()["capabilities"]["delegate"]["worker"]=="codex"
+
+        body={
+            "parentTaskId":task_id,
+            "ownerSessionId":session_id,
+            "capability":"implement isolated proof check",
+            "objective":"Create a bounded child change and verify it.",
+            "acceptanceCommands":["python -m pytest -q"],
+            "budget":200,
+            "operationId":"delegate-operation-1",
+            "confirmation":"RUN_DELEGATE",
+        }
+        first=client.post(
+            f"/api/v1/projects/{project_id}/infra/frontier/delegate",json=body
+        )
+        assert first.status_code==202,first.text
+        payload=first.json()
+        assert payload["state"]=="QUEUED"
+        assert payload["replayed"] is False
+        request_id=payload["requestId"]
+        child_task_id=payload["childTaskId"]
+
+        second=client.post(
+            f"/api/v1/projects/{project_id}/infra/frontier/delegate",json=body
+        )
+        assert second.status_code==202,second.text
+        assert second.json()["requestId"]==request_id
+        assert second.json()["replayed"] is True
+
+        replay=client.get(f"/api/v1/projects/{project_id}/infra/replay")
+        assert replay.status_code==200,replay.text
+        assert replay.json()["delegations"][payload["relationId"]]=="OPEN"
+        assert replay.json()["tasks"][child_task_id]=="RUNNABLE"
+
+        runs=client.get(f"/api/v1/projects/{project_id}/infra/frontier").json()["delegateRuns"]
+        assert len([row for row in runs if row["requestId"]==request_id])==1
+        assert next(row for row in runs if row["requestId"]==request_id)["state"]=="QUEUED"
+
+        cancelled=client.post(
+            f"/api/v1/projects/{project_id}/infra/frontier/delegations/{request_id}/cancel",
+            json={"rationale":"operator cancelled before external worker start"},
+        )
+        assert cancelled.status_code==200,cancelled.text
+        assert cancelled.json()["state"]=="CANCELLED"
+
+        replay=client.get(f"/api/v1/projects/{project_id}/infra/replay").json()
+        assert replay["delegations"][payload["relationId"]]=="FAILED"
+        assert replay["tasks"][child_task_id]=="FAILED"
+        domain=[item["type"] for item in client.get(
+            f"/api/v1/projects/{project_id}/infra/events"
+        ).json()["items"]]
+        assert "DELEGATION_CREATED" in domain
+        assert "FRONTIER_DELEGATE_QUEUED" in domain
+        assert "DELEGATION_FAILED" in domain
