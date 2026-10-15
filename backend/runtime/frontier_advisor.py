@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from typing import Callable
+from uuid import uuid4
 
 from gateway.ccr.client import gateway_provider
 from gateway.ccr.providers.openai_compatible import ProviderRequest
@@ -37,7 +38,7 @@ class FrontierAdvisor:
         if self.gateway is None:
             raise FrontierAdvisorUnavailable("frontier advisor requires the model gateway ledger")
         payload = ProviderRequest(
-            f"frontier_consult:{request.project_id}:{request.parent_task_id}:{request.capability}",
+            f"frontier_consult:{request.project_id}:{request.parent_task_id}:{uuid4().hex}",
             self.model_binding,
             [{"role": "system", "content": CONSULT_SYSTEM_PROMPT},
              {"role": "user", "content": f"capability: {request.capability}\n"
