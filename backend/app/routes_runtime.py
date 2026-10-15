@@ -196,11 +196,6 @@ def register(api,store:Store,runtime):
         if not runtime.available:bad('Model provider is not configured',503)
         with store.tx():
             c=obj_or_404(store,'channel',channel_id);project(store,c['projectId'],True)
-            artifacts=list_of_str(body.get('artifactIds',[]),'artifactIds')
-            for aid in artifacts:
-                a=obj_or_404(store,'artifact',aid)
-                if a['projectId']!=c['projectId'] or not a.get('contentAvailable'):
-                    bad('Unusable context evidence',403)
             task_id=body.get('taskId')
             if task_id is not None:
                 task=obj_or_404(store,'task',nonempty(task_id,'taskId'))
@@ -209,6 +204,14 @@ def register(api,store:Store,runtime):
             history=[m for m in store.all('message') if m['channelId']==channel_id]
             if not history or history[-1]['senderName']!='You':bad('No unanswered user message',409)
             user_message=history[-1]
+            artifacts=list(dict.fromkeys(
+                list_of_str(body.get('artifactIds',[]),'artifactIds')
+                +list_of_str(user_message.get('artifactIds',[]),'message.artifactIds')
+            ))
+            for aid in artifacts:
+                a=obj_or_404(store,'artifact',aid)
+                if a['projectId']!=c['projectId'] or not a.get('contentAvailable'):
+                    bad('Unusable context evidence',403)
             response_mode=oneof(user_message.get('responseMode','single'),('single','multi'),'responseMode')
             explicit_agent_id=body.get('agentId')
             if explicit_agent_id is not None:
